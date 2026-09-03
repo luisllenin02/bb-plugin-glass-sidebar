@@ -25,6 +25,7 @@ import { FolderShelf } from "./FolderShelf";
 import { partitionByFolder } from "./folder-list";
 import { useFolderDrag } from "./useFolderDrag";
 import { useOrganization } from "./useOrganization";
+import { useShelfReorder } from "./useShelfReorder";
 import { accentCss } from "./accent";
 import {
   hideChildrenOfVisibleParents,
@@ -89,6 +90,7 @@ const EMPTY_THREAD_IDS: ReadonlySet<string> = new Set();
 
 export function ThreadList({
   activeThreadId,
+  activeProjectId,
   onNavigate,
   searchQuery,
 }: PluginThreadListProps) {
@@ -179,12 +181,16 @@ export function ThreadList({
     actions: organization.actions,
     onFolderCreated: setRenamingFolderId,
   });
+  // Durable flat-shelf order: host pinned order and this plugin's inbox_order.
+  const shelfReorder = useShelfReorder({ pinned, inbox });
+  const orderedPinned = shelfReorder.pinned;
+  const orderedInbox = shelfReorder.inbox;
   const folderPartition = useMemo(
     () =>
-      partitionByFolder([...pinned, ...inbox], {
+      partitionByFolder([...orderedPinned, ...orderedInbox], {
         folders: organization.folders,
       }),
-    [inbox, organization.folders, pinned],
+    [orderedInbox, orderedPinned, organization.folders],
   );
   // Folder members live in exactly one place, so the flat shelves drop them.
   const ungroupedIds = useMemo(
@@ -192,12 +198,20 @@ export function ThreadList({
     [folderPartition.ungrouped],
   );
   const shelfPinned = useMemo(
-    () => pinned.filter((thread) => ungroupedIds.has(thread.id)),
-    [pinned, ungroupedIds],
+    () => orderedPinned.filter((thread) => ungroupedIds.has(thread.id)),
+    [orderedPinned, ungroupedIds],
   );
   const shelfInbox = useMemo(
-    () => inbox.filter((thread) => ungroupedIds.has(thread.id)),
-    [inbox, ungroupedIds],
+    () => orderedInbox.filter((thread) => ungroupedIds.has(thread.id)),
+    [orderedInbox, ungroupedIds],
+  );
+  const shelfPinnedIds = useMemo(
+    () => shelfPinned.map((thread) => thread.id),
+    [shelfPinned],
+  );
+  const shelfInboxIds = useMemo(
+    () => shelfInbox.map((thread) => thread.id),
+    [shelfInbox],
   );
   const folderAccentFor = (
     folder: (typeof organization.folders)[number],
@@ -210,7 +224,9 @@ export function ThreadList({
     return organization.projectAccentFor([...projectIds][0]!).css;
   };
 
-  const renderActiveThread: RenderActiveThread = (thread, _shelf) => {
+  const renderActiveThread: RenderActiveThread = (thread, shelf) => {
+    const folder = organization.folderOf(thread.id);
+    const organizationControls = folderDrag.threadControls(thread.id);
     const rowProps = {
       thread,
       threads: hostThreads,
@@ -219,17 +235,19 @@ export function ThreadList({
       onNavigate,
       now,
       // @rows:accent (Q2)
-      accent: organization.accentFor(
-        thread,
-        organization.folderOf(thread.id)?.id ?? null,
-      ),
-      accentSource: organization.accentSourceFor(
-        thread,
-        organization.folderOf(thread.id)?.id ?? null,
-      ).source,
+      accent: organization.accentFor(thread, folder?.id ?? null),
+      accentSource: organization.accentSourceFor(thread, folder?.id ?? null)
+        .source,
       organization,
       onFolderCreated: setRenamingFolderId,
-      reorder: folderDrag.threadControls(thread.id),
+      reorder: folder
+        ? organizationControls
+        : shelfReorder.controlsFor(
+            thread,
+            shelf,
+            shelf === "pinned" ? shelfPinnedIds : shelfInboxIds,
+            organizationControls,
+          ),
       // @rows:workflow (Q3)
       workflowRuns: workflow.runs,
       // @rows:decor (Q4)
@@ -305,7 +323,7 @@ export function ThreadList({
               entries={folderPartition.folderEntries}
               organization={organization}
               drag={folderDrag}
-              activeProjectId={null}
+              activeProjectId={activeProjectId}
               renamingFolderId={renamingFolderId}
               onRenamingFolderChange={setRenamingFolderId}
               onNewThread={(projectId) =>

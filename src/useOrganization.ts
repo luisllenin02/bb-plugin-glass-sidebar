@@ -198,9 +198,9 @@ export function useOrganization(
       const rollback = organization ?? EMPTY_ORGANIZATION;
       setOrganization(optimistic(rollback));
       try {
-        const result = await request();
-        await refresh();
-        return result;
+        // No read here: the server publishes ORGANIZATION_CHANNEL after every
+        // mutation, and that signal is what reconciles the optimistic state.
+        return await request();
       } catch (error) {
         const host = await refresh();
         if (host === null) setOrganization(rollback);

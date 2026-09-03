@@ -213,6 +213,50 @@ describe("FolderShelf integration", () => {
     );
   });
 
+  it("opens the active project's composer from an empty folder", async () => {
+    const emptyFolder: Organization = {
+      folders: [
+        {
+          id: "folder_empty",
+          name: "Empty work",
+          colorIndex: 0,
+          customColor: null,
+          collapsed: false,
+          sortIndex: 0,
+          threadIds: [],
+        },
+      ],
+      members: {},
+      threadAccents: {},
+      projectAccents: {},
+    };
+    const rendered = renderSlot<PluginThreadListProps>(
+      inbox,
+      { ...props, activeProjectId: "route_project" },
+      {
+        sidebarThreads: {
+          status: "ready",
+          threads: [thread({ id: "loose", title: "Loose active" })],
+          projects: [
+            { id: "project", name: "Project", isPersonal: false },
+            { id: "route_project", name: "Route", isPersonal: false },
+          ],
+        },
+        rpc: { getOrganization: () => emptyFolder },
+      },
+    );
+    const folders = await screen.findByRole("region", { name: "Folders" });
+    fireEvent.click(
+      within(folders).getByRole("button", { name: "+ New thread" }),
+    );
+    await waitFor(() =>
+      expect(rendered.sidebarActionCalls).toContainEqual({
+        method: "openNewThread",
+        options: { projectId: "route_project", focusPrompt: true },
+      }),
+    );
+  });
+
   it("falls back to the folder's own accent dot while Q4 decor is empty", async () => {
     renderFolders();
     const container = await blueContainer();

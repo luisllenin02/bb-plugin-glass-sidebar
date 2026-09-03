@@ -12,7 +12,11 @@ import type {
   PluginSidebarThread,
   PluginSidebarThreadActions,
 } from "@get-bb/plugin-sdk/app";
-import { OpenPanesRow } from "./LiveStrip";
+import {
+  COLUMNS_EXPANDED_STORAGE_KEY,
+  OpenPanesRow,
+} from "./LiveStrip";
+import { buildColumns } from "./columns-view";
 import { reportPane, resetSplitRegistryForTests } from "./split-registry";
 
 Object.defineProperty(Element.prototype, "scrollIntoView", {
@@ -151,6 +155,99 @@ describe("OpenPanesRow", () => {
     expect(
       window.localStorage.getItem("bb-sidebar.liveStrip.openPanes"),
     ).toBe("collapsed");
+  });
+
+  it("persists the columns toggle across remounts", () => {
+    const threads = [
+      thread({ id: "thr_a", title: "First" }),
+      thread({ id: "thr_b", title: "Second" }),
+    ];
+    reportPane("thr_a", { ordinal: 1, count: 2, isFocused: true });
+    reportPane("thr_b", { ordinal: 2, count: 2, isFocused: false });
+    const actions = { open: vi.fn() } as unknown as PluginSidebarThreadActions;
+    const props = {
+      threads,
+      projectNameById: new Map<string, string>(),
+      accentFor: () => undefined,
+      activeThreadId: "thr_a",
+      onNavigate: () => {},
+      actions,
+      now: 1_000,
+    };
+
+    const first = renderReact(<OpenPanesRow {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Columns" }));
+    expect(window.localStorage.getItem(COLUMNS_EXPANDED_STORAGE_KEY)).toBe(
+      "expanded",
+    );
+    expect(
+      screen.getByRole("group", { name: "Session columns" }),
+    ).toBeDefined();
+
+    first.unmount();
+    renderReact(<OpenPanesRow {...props} />);
+    expect(
+      screen.getByRole("group", { name: "Session columns" }),
+    ).toBeDefined();
+    expect(screen.queryByRole("group", { name: "Open panes" })).toBeNull();
+  });
+
+  it("feeds pane-ordinal build output into expanded cards", () => {
+    const threads = [
+      thread({ id: "thr_b", title: "Second" }),
+      thread({ id: "thr_a", title: "First" }),
+    ];
+    const panes = [
+      { threadId: "thr_b", ordinal: 2, count: 2, isFocused: false },
+      { threadId: "thr_a", ordinal: 1, count: 2, isFocused: true },
+    ];
+    for (const { threadId, ...entry } of panes) reportPane(threadId, entry);
+    const expected = buildColumns(panes, threads, [], () => undefined);
+
+    const open = vi.fn();
+    renderReact(
+      <OpenPanesRow
+        threads={threads}
+        projectNameById={new Map()}
+        accentFor={() => undefined}
+        activeThreadId="thr_a"
+        onNavigate={() => {}}
+        actions={{ open } as unknown as PluginSidebarThreadActions}
+        now={1_000}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Columns" }));
+
+    const cards = Array.from(
+      screen
+        .getByRole("group", { name: "Session columns" })
+        .querySelectorAll("[data-column-thread-id]"),
+    );
+    expect(
+      cards.map((card) => card.getAttribute("data-column-thread-id")),
+    ).toEqual(expected.map((column) => column.threadId));
+    expect(cards[0]!.className).toContain("ring-2");
+    fireEvent.click(cards[1]!, { metaKey: true });
+    expect(open).toHaveBeenCalledWith("thr_b", { split: true });
+  });
+
+  it("keeps the compact chips as the default mode", () => {
+    const threads = [thread({ id: "thr_a" }), thread({ id: "thr_b" })];
+    reportPane("thr_a", { ordinal: 1, count: 2, isFocused: true });
+    reportPane("thr_b", { ordinal: 2, count: 2, isFocused: false });
+    renderReact(
+      <OpenPanesRow
+        threads={threads}
+        projectNameById={new Map()}
+        accentFor={() => undefined}
+        activeThreadId="thr_a"
+        onNavigate={() => {}}
+        actions={{ open: vi.fn() } as unknown as PluginSidebarThreadActions}
+      />,
+    );
+
+    expect(screen.getByRole("group", { name: "Open panes" })).toBeDefined();
+    expect(screen.queryByRole("group", { name: "Session columns" })).toBeNull();
   });
 });
 

@@ -17,14 +17,23 @@ import { relativeTimeLabel } from "./relative-time";
 import type { ProjectDecorEntry, ProjectIconColorName } from "./row-props";
 import { StatusGlyph } from "./StatusGlyph";
 import { ProviderGlyph } from "./ProviderGlyph";
-import { chipLabel, classifyNow, nowRows } from "./live-strip";
+import { ProjectGlyph } from "./ProjectGlyph";
+import {
+  chipLabel,
+  classifyNow,
+  nowRows,
+} from "./live-strip";
+import { buildColumns, type ColumnViewModel } from "./columns-view";
 import {
   getSnapshot,
   subscribe,
   type SplitPaneEntry,
 } from "./split-registry";
+import type { WorkflowRun } from "./workflow-activity-shared";
 
 export const COLLAPSE_STORAGE_PREFIX = "bb-sidebar.liveStrip.";
+export const COLUMNS_EXPANDED_STORAGE_KEY =
+  "glass-sidebar.liveStrip.openPanes.expanded";
 
 const PROJECT_DECOR_ACCENTS: Record<ProjectIconColorName, string> = {
   red: ACCENT_PALETTE[2],
@@ -72,39 +81,65 @@ function useLiveStripExpanded(key: string): [boolean, () => void] {
   ];
 }
 
+function readColumnsExpanded(): boolean {
+  try {
+    if (typeof localStorage === "undefined") return false;
+    return localStorage.getItem(COLUMNS_EXPANDED_STORAGE_KEY) === "expanded";
+  } catch {
+    return false;
+  }
+}
+
+function writeColumnsExpanded(expanded: boolean): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(
+      COLUMNS_EXPANDED_STORAGE_KEY,
+      expanded ? "expanded" : "collapsed",
+    );
+  } catch {
+    // Storage-disabled clients keep the in-memory choice for this mount.
+  }
+}
+
 function LiveStripSection({
   label,
   count,
   expanded,
   onToggle,
+  controls,
   children,
 }: {
   label: string;
   count: number;
   expanded: boolean;
   onToggle: () => void;
+  controls?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <section aria-label={label}>
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        className="flex w-full items-center gap-2 px-2.5 pb-1 pt-2 text-left"
-      >
-        <span className="text-2xs font-medium text-muted-foreground/70">
-          {expanded ? label : `${label} (${count})`}
-        </span>
-        <span className="h-px flex-1 bg-sidebar-border" />
-        <Icon
-          name="ChevronDown"
-          className={cn(
-            "size-3 shrink-0 text-muted-foreground/70 transition-transform duration-150 ease-out motion-reduce:transition-none",
-            expanded && "rotate-180",
-          )}
-        />
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          className="flex min-w-0 flex-1 items-center gap-2 px-2.5 pb-1 pt-2 text-left"
+        >
+          <span className="text-2xs font-medium text-muted-foreground/70">
+            {expanded ? label : `${label} (${count})`}
+          </span>
+          <span className="h-px flex-1 bg-sidebar-border" />
+          <Icon
+            name="ChevronDown"
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground/70 transition-transform duration-150 ease-out motion-reduce:transition-none",
+              expanded && "rotate-180",
+            )}
+          />
+        </button>
+        {controls}
+      </div>
       {expanded ? children : null}
     </section>
   );
@@ -185,6 +220,7 @@ export interface LiveStripCommonProps {
   activeThreadId: string | null;
   onNavigate: () => void;
   actions: PluginSidebarThreadActions;
+  workflowRows?: readonly WorkflowRun[];
 }
 
 function liveStripAccent(
@@ -218,11 +254,17 @@ export function OpenPanesRow({
   activeThreadId,
   onNavigate,
   actions,
-}: LiveStripCommonProps) {
+  workflowRows = [],
+  now = Date.now(),
+}: LiveStripCommonProps & { now?: number }) {
   const entries = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const [expanded, toggle] = useLiveStripExpanded("openPanes");
+  const [columnsExpanded, setColumnsExpanded] = useState(readColumnsExpanded);
   const chips = chipsFromEntries(entries, threads);
   if (chips.length < 2) return null;
+  const columns = buildColumns(entries, threads, workflowRows, (thread) =>
+    liveStripAccent(thread, accentFor, projectDecor),
+  );
 
   return (
     <LiveStripSection
@@ -230,46 +272,180 @@ export function OpenPanesRow({
       count={chips.length}
       expanded={expanded}
       onToggle={toggle}
+      controls={
+        <button
+          type="button"
+          aria-label="Columns"
+          aria-pressed={columnsExpanded}
+          onClick={() =>
+            setColumnsExpanded((current) => {
+              const next = !current;
+              writeColumnsExpanded(next);
+              return next;
+            })
+          }
+          className="mr-2 mt-1.5 flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground"
+        >
+          <span>Columns</span>
+          <Icon
+            name="ChevronDown"
+            className={cn(
+              "size-3 transition-transform duration-150 ease-out motion-reduce:transition-none",
+              columnsExpanded && "rotate-180",
+            )}
+          />
+        </button>
+      }
     >
-      <div
-        role="group"
-        aria-label="Open panes"
-        className="flex flex-wrap gap-1 px-2.5 pb-2"
-      >
-        {chips.map(({ entry, thread }) => {
-          const accent = liveStripAccent(thread, accentFor, projectDecor);
-          const title = chipLabel(threadDisplayTitle(thread));
-          const filled = entry.isFocused || thread.id === activeThreadId;
-          return (
-            <button
-              key={thread.id}
-              type="button"
-              data-open-pane-thread-id={thread.id}
-              data-live-strip="open-panes"
-              aria-label={`Open pane: ${title}, pane ${entry.ordinal} of ${entry.count}${
-                filled ? ", focused" : ""
-              }`}
-              onClick={(event) => {
-                actions.open(
-                  thread.id,
-                  event.metaKey || event.ctrlKey ? { split: true } : undefined,
-                );
-                onNavigate();
-              }}
-              className={cn(
-                "flex max-w-36 items-center gap-1.5 rounded-full border px-2 py-1 text-2xs",
-                filled
-                  ? "border-transparent bg-primary/15 text-foreground ring-1 ring-primary/60"
-                  : "border-sidebar-border text-muted-foreground hover:bg-sidebar-accent/60",
-              )}
-            >
-              <AccentOrProviderDot thread={thread} accent={accent} />
-              <span className="truncate">{title}</span>
-            </button>
-          );
-        })}
-      </div>
+      {columnsExpanded ? (
+        <ColumnsStrip
+          columns={columns}
+          threads={threads}
+          projectDecor={projectDecor}
+          now={now}
+          activeThreadId={activeThreadId}
+          onNavigate={onNavigate}
+          actions={actions}
+        />
+      ) : (
+        <div
+          role="group"
+          aria-label="Open panes"
+          className="flex flex-wrap gap-1 px-2.5 pb-2"
+        >
+          {chips.map(({ entry, thread }) => {
+            const accent = liveStripAccent(thread, accentFor, projectDecor);
+            const title = chipLabel(threadDisplayTitle(thread));
+            const filled = entry.isFocused || thread.id === activeThreadId;
+            return (
+              <button
+                key={thread.id}
+                type="button"
+                data-open-pane-thread-id={thread.id}
+                data-live-strip="open-panes"
+                aria-label={`Open pane: ${title}, pane ${entry.ordinal} of ${entry.count}${
+                  filled ? ", focused" : ""
+                }`}
+                onClick={(event) => {
+                  actions.open(
+                    thread.id,
+                    event.metaKey || event.ctrlKey
+                      ? { split: true }
+                      : undefined,
+                  );
+                  onNavigate();
+                }}
+                className={cn(
+                  "flex max-w-36 items-center gap-1.5 rounded-full border px-2 py-1 text-2xs",
+                  filled
+                    ? "border-transparent bg-primary/15 text-foreground ring-1 ring-primary/60"
+                    : "border-sidebar-border text-muted-foreground hover:bg-sidebar-accent/60",
+                )}
+              >
+                <AccentOrProviderDot thread={thread} accent={accent} />
+                <span className="truncate">{title}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </LiveStripSection>
+  );
+}
+
+function ColumnsStrip({
+  columns,
+  threads,
+  projectDecor,
+  now,
+  activeThreadId,
+  onNavigate,
+  actions,
+}: {
+  columns: readonly ColumnViewModel[];
+  threads: readonly PluginSidebarThread[];
+  projectDecor: Readonly<Record<string, ProjectDecorEntry>>;
+  now: number;
+  activeThreadId: string | null;
+  onNavigate: () => void;
+  actions: PluginSidebarThreadActions;
+}) {
+  const threadById = new Map(threads.map((thread) => [thread.id, thread]));
+  return (
+    <div
+      role="group"
+      aria-label="Session columns"
+      className="flex snap-x snap-mandatory gap-2 overflow-x-auto px-2.5 pb-2"
+    >
+      {columns.map((column) => {
+        const thread = threadById.get(column.threadId);
+        const focused = column.isFocused || column.threadId === activeThreadId;
+        return (
+          <button
+            key={column.threadId}
+            type="button"
+            data-column-thread-id={column.threadId}
+            aria-label={`Column ${column.ordinal}: ${column.title}${focused ? ", focused" : ""}`}
+            onClick={(event) => {
+              actions.open(
+                column.threadId,
+                event.metaKey || event.ctrlKey ? { split: true } : undefined,
+              );
+              onNavigate();
+            }}
+            className={cn(
+              "flex min-w-40 snap-start flex-col gap-2 rounded-lg border bg-sidebar-accent/25 p-2 text-left text-xs",
+              focused
+                ? "border-primary/60 ring-2 ring-primary/60"
+                : "border-sidebar-border hover:bg-sidebar-accent/60",
+            )}
+          >
+            <span className="flex min-w-0 items-center gap-1.5">
+              <ProjectGlyph
+                decor={
+                  column.projectGlyph
+                    ? projectDecor[column.projectGlyph]
+                    : undefined
+                }
+                resolvedAccent={column.projectAccent}
+                className="size-3.5"
+              />
+              <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                {column.title}
+              </span>
+              <span className="shrink-0 text-2xs text-muted-foreground">
+                {column.ordinal}
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5 text-2xs text-muted-foreground">
+              <StatusGlyph
+                indicator={column.statusGlyph}
+                label={thread?.indicatorLabel ?? null}
+              />
+              <span>{relativeTimeLabel(column.elapsed, now)}</span>
+            </span>
+            {column.workflowRows.length > 0 ? (
+              <span className="flex flex-col gap-1 border-t border-sidebar-border/60 pt-1.5">
+                {column.workflowRows.map((row) => (
+                  <span
+                    key={row.id}
+                    data-column-workflow-run-id={row.id}
+                    className={cn(
+                      "flex min-w-0 items-center gap-1 text-2xs text-muted-foreground",
+                      row.status === "queued" && "text-attention",
+                    )}
+                  >
+                    <StatusGlyph indicator="workflow" label={null} />
+                    <span className="min-w-0 flex-1 truncate">{row.name}</span>
+                    <span className="shrink-0">{row.status}</span>
+                  </span>
+                ))}
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

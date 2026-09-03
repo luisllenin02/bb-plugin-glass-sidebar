@@ -691,6 +691,7 @@ export function ThreadList({
           activeThreadId={activeThreadId}
           onNavigate={onNavigate}
           actions={sidebarActions}
+          workflowRows={workflow.runs}
           now={now}
         />
         {/* @slot:bulk-bar (Q6) */}

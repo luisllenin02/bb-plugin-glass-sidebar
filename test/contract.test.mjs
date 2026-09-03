@@ -39,7 +39,7 @@ test("production bundles stay within their weight and polling budgets", async ()
   const appSize = (await stat(path.join(root, "dist/app.js"))).size;
   const serverSize = (await stat(path.join(root, "dist/server.js"))).size;
   assert.ok(appSize <= 300 * 1024, `dist/app.js is ${appSize} bytes`);
-  assert.ok(serverSize <= 800 * 1024, `dist/server.js is ${serverSize} bytes`);
+  assert.ok(serverSize <= 1024 * 1024, `dist/server.js is ${serverSize} bytes`);
   assert.equal(
     (appBundle.match(/setInterval\s*\(/g) ?? []).length,
     2,

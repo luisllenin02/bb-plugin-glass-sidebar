@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACCENT_NAMES,
   ACCENT_PALETTE,
   NO_ACCENT,
   accentCss,
@@ -31,6 +32,17 @@ describe("accent helpers", () => {
     );
     expect(accentWash({ colorIndex: 7, customColor: null })).toBe(
       `color-mix(in srgb, ${ACCENT_PALETTE[7]} 18%, transparent)`,
+    );
+  });
+
+  it("names every palette entry and passes mode-aware colours through", () => {
+    expect(ACCENT_NAMES).toHaveLength(ACCENT_PALETTE.length);
+    expect(ACCENT_NAMES[0]).toBe("none");
+    const linked = "light-dark(oklch(0.522 0.175 256), oklch(0.72 0.148 256))";
+    expect(accentCss(linked)).toBe(linked);
+    expect(accentCss("   ")).toBeUndefined();
+    expect(accentWash(linked)).toBe(
+      `color-mix(in srgb, ${linked} 18%, transparent)`,
     );
   });
 });

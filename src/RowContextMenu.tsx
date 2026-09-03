@@ -8,8 +8,10 @@ import {
   type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
 import { Icon } from "./components/Icon";
+import { AccentPicker, accentValueFromCss } from "./AccentPicker";
 import { cn } from "./lib/utils";
 import { threadDisplayTitle } from "./inbox";
+import { uniqueFolderName } from "./organization";
 import type {
   ConfiguredSnoozePreset,
   DecorAccess,
@@ -52,6 +54,7 @@ export function RowContextMenu({
   projectIconsAvailable?: boolean;
 }) {
   const actions = useSidebarThreadActions();
+  const folder = organization?.folderOf(thread.id) ?? null;
 
   return (
     <ContextMenu.Root>
@@ -81,6 +84,28 @@ export function RowContextMenu({
           <CopySubmenu thread={thread} />
           {/* @menu:decor (Q4) */}
           {/* @menu:organization (Q2) */}
+          {organization ? (
+            <>
+              <MoveToFolderSubmenu
+                thread={thread}
+                organization={organization}
+                onFolderCreated={onFolderCreated}
+              />
+              {folder ? (
+                <Item
+                  onSelect={() =>
+                    void organization.actions.moveThreadToFolder({
+                      threadId: thread.id,
+                      folderId: null,
+                    })
+                  }
+                >
+                  Remove from folder
+                </Item>
+              ) : null}
+              <ThreadColourSubmenu thread={thread} organization={organization} />
+            </>
+          ) : null}
           {/* @menu:lifecycle (Q5) */}
           <Separator />
           <Item
@@ -100,6 +125,108 @@ export function RowContextMenu({
         </ContextMenu.Content>
       </ContextMenu.Portal>
     </ContextMenu.Root>
+  );
+}
+
+function MoveToFolderSubmenu({
+  thread,
+  organization,
+  onFolderCreated,
+}: {
+  thread: PluginSidebarThread;
+  organization: OrganizationAccess;
+  onFolderCreated?: (folderId: string) => void;
+}) {
+  return (
+    <ContextMenu.Sub>
+      <ContextMenu.SubTrigger className={submenuTriggerClassName}>
+        Move to folder
+        <Icon name="ChevronRight" className="ml-auto size-4 opacity-60" />
+      </ContextMenu.SubTrigger>
+      <ContextMenu.Portal>
+        <ContextMenu.SubContent
+          aria-label="Move to folder"
+          sideOffset={4}
+          className="z-50 min-w-44 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+        >
+          {organization.folders.map((folder) => (
+            <Item
+              key={folder.id}
+              disabled={organization.folderOf(thread.id)?.id === folder.id}
+              onSelect={() =>
+                void organization.actions.moveThreadToFolder({
+                  threadId: thread.id,
+                  folderId: folder.id,
+                })
+              }
+            >
+              {folder.name}
+            </Item>
+          ))}
+          {organization.folders.length > 0 ? <Separator /> : null}
+          <Item
+            onSelect={() => {
+              void organization.actions
+                .createFolder({
+                  name: uniqueFolderName(organization.folders),
+                  threadIds: [thread.id],
+                })
+                .then(({ folder }) => onFolderCreated?.(folder.id));
+            }}
+          >
+            New folder…
+          </Item>
+        </ContextMenu.SubContent>
+      </ContextMenu.Portal>
+    </ContextMenu.Sub>
+  );
+}
+
+function ThreadColourSubmenu({
+  thread,
+  organization,
+}: {
+  thread: PluginSidebarThread;
+  organization: OrganizationAccess;
+}) {
+  const folderId = organization.folderOf(thread.id)?.id ?? null;
+  const value = accentValueFromCss(organization.accentFor(thread, folderId));
+  return (
+    <ContextMenu.Sub>
+      <ContextMenu.SubTrigger className={submenuTriggerClassName}>
+        Thread colour
+        <Icon name="ChevronRight" className="ml-auto size-4 opacity-60" />
+      </ContextMenu.SubTrigger>
+      <ContextMenu.Portal>
+        <ContextMenu.SubContent
+          aria-label={`Colour for ${threadDisplayTitle(thread)}`}
+          sideOffset={4}
+          className="z-50 w-64 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+        >
+          <AccentPicker
+            value={value}
+            onChange={(accent) =>
+              void organization.actions.setThreadAccent({
+                threadId: thread.id,
+                ...accent,
+              })
+            }
+          />
+          <Separator />
+          <Item
+            onSelect={() =>
+              void organization.actions.setThreadAccent({
+                threadId: thread.id,
+                colorIndex: 0,
+                customColor: null,
+              })
+            }
+          >
+            Clear
+          </Item>
+        </ContextMenu.SubContent>
+      </ContextMenu.Portal>
+    </ContextMenu.Sub>
   );
 }
 

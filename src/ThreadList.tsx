@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  experimental_useSidebarThreadActions as useSidebarThreadActions,
   experimental_useSidebarThreads as useSidebarThreads,
   type PluginSidebarThread,
   type PluginThreadListProps,
@@ -17,7 +18,14 @@ import { Icon } from "./components/Icon";
 import { cn } from "./lib/utils";
 import { ThreadCard } from "./ThreadCard";
 import { SearchResults } from "./SearchResults";
+import { LiveStrip } from "./LiveStrip";
+import { SplitProbe } from "./SplitProbe";
 import { TRAILING_GLYPH_BOX_CLASS } from "./StatusSlot";
+import { FolderShelf } from "./FolderShelf";
+import { partitionByFolder } from "./folder-list";
+import { useFolderDrag } from "./useFolderDrag";
+import { useOrganization } from "./useOrganization";
+import { accentCss } from "./accent";
 import {
   hideChildrenOfVisibleParents,
   partitionPinned,
@@ -37,6 +45,7 @@ import {
   type SettingsAccess,
   type WorkflowAccess,
 } from "./row-props";
+import { useWorkflowActivity } from "./useWorkflowActivity";
 
 const SHELF_EXPANSION_STORAGE_KEY = "glass-sidebar:shelf-expansion:v1";
 
@@ -91,8 +100,10 @@ export function ThreadList({
   // this file — never inside renderActiveThread or any row loop.
   let organization: OrganizationAccess = EMPTY_ORGANIZATION_ACCESS;
   // @hooks:organization (Q2)
+  organization = useOrganization();
   let workflow: WorkflowAccess = EMPTY_WORKFLOW_ACCESS;
   // @hooks:workflow (Q3)
+  workflow = useWorkflowActivity();
   let decor: DecorAccess = EMPTY_DECOR_ACCESS;
   // @hooks:decor (Q4)
   let lifecycle: LifecycleAccess = EMPTY_LIFECYCLE_ACCESS;
@@ -159,6 +170,46 @@ export function ThreadList({
     [inbox, pinned, searchQuery],
   );
 
+  // The folder shelf's "+ New thread" footer needs the host composer action.
+  const sidebarActions = useSidebarThreadActions();
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const folderDrag = useFolderDrag({
+    folders: organization.folders,
+    folderOf: organization.folderOf,
+    actions: organization.actions,
+    onFolderCreated: setRenamingFolderId,
+  });
+  const folderPartition = useMemo(
+    () =>
+      partitionByFolder([...pinned, ...inbox], {
+        folders: organization.folders,
+      }),
+    [inbox, organization.folders, pinned],
+  );
+  // Folder members live in exactly one place, so the flat shelves drop them.
+  const ungroupedIds = useMemo(
+    () => new Set(folderPartition.ungrouped.map((thread) => thread.id)),
+    [folderPartition.ungrouped],
+  );
+  const shelfPinned = useMemo(
+    () => pinned.filter((thread) => ungroupedIds.has(thread.id)),
+    [pinned, ungroupedIds],
+  );
+  const shelfInbox = useMemo(
+    () => inbox.filter((thread) => ungroupedIds.has(thread.id)),
+    [inbox, ungroupedIds],
+  );
+  const folderAccentFor = (
+    folder: (typeof organization.folders)[number],
+    members: readonly PluginSidebarThread[],
+  ) => {
+    const manual = accentCss(folder);
+    if (manual) return manual;
+    const projectIds = new Set(members.map((thread) => thread.projectId));
+    if (projectIds.size !== 1) return undefined;
+    return organization.projectAccentFor([...projectIds][0]!).css;
+  };
+
   const renderActiveThread: RenderActiveThread = (thread, _shelf) => {
     const rowProps = {
       thread,
@@ -168,7 +219,19 @@ export function ThreadList({
       onNavigate,
       now,
       // @rows:accent (Q2)
+      accent: organization.accentFor(
+        thread,
+        organization.folderOf(thread.id)?.id ?? null,
+      ),
+      accentSource: organization.accentSourceFor(
+        thread,
+        organization.folderOf(thread.id)?.id ?? null,
+      ).source,
+      organization,
+      onFolderCreated: setRenamingFolderId,
+      reorder: folderDrag.threadControls(thread.id),
       // @rows:workflow (Q3)
+      workflowRuns: workflow.runs,
       // @rows:decor (Q4)
       // @rows:lifecycle (Q5)
       // @rows:selection-sort (Q6)
@@ -180,6 +243,24 @@ export function ThreadList({
     <div data-glass-sidebar-root className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
         {/* @slot:live-strip (Q3) */}
+        {visibleThreads.map((thread) => (
+          <SplitProbe key={`split-probe:${thread.id}`} threadId={thread.id} />
+        ))}
+        <LiveStrip
+          threads={visibleThreads}
+          projectNameById={projectNameById}
+          accentFor={(thread) =>
+            organization.accentFor(
+              thread,
+              organization.folderOf(thread.id)?.id ?? null,
+            )
+          }
+          projectDecor={decor.projects}
+          activeThreadId={activeThreadId}
+          onNavigate={onNavigate}
+          actions={sidebarActions}
+          now={now}
+        />
         {status === "loading" ? null : status === "error" ? (
           <p
             role="status"
@@ -220,11 +301,27 @@ export function ThreadList({
         ) : (
           <div className="flex flex-col">
             {/* @slot:folders (Q2) */}
+            <FolderShelf
+              entries={folderPartition.folderEntries}
+              organization={organization}
+              drag={folderDrag}
+              activeProjectId={null}
+              renamingFolderId={renamingFolderId}
+              onRenamingFolderChange={setRenamingFolderId}
+              onNewThread={(projectId) =>
+                sidebarActions.openNewThread({ projectId, focusPrompt: true })
+              }
+              accentForFolder={folderAccentFor}
+              projectDecor={decor.projects}
+              renderThread={(thread) =>
+                renderActiveThread(thread, thread.isPinned ? "pinned" : "inbox")
+              }
+            />
             {/* @slot:bulk-bar (Q6) */}
-            {pinned.length > 0 ? (
+            {shelfPinned.length > 0 ? (
               <CollapsibleShelf
                 label="Pinned"
-                count={pinned.length}
+                count={shelfPinned.length}
                 expanded={expandedShelves.pinned}
                 onToggle={() =>
                   setExpandedShelves((current) => ({
@@ -234,16 +331,16 @@ export function ThreadList({
                 }
               >
                 <Shelf>
-                  {pinned.map((thread) =>
+                  {shelfPinned.map((thread) =>
                     renderActiveThread(thread, "pinned"),
                   )}
                 </Shelf>
               </CollapsibleShelf>
             ) : null}
-            {inbox.length > 0 ? (
+            {shelfInbox.length > 0 ? (
               <CollapsibleShelf
                 label="Active"
-                count={inbox.length}
+                count={shelfInbox.length}
                 expanded={expandedShelves.active}
                 onToggle={() =>
                   setExpandedShelves((current) => ({
@@ -253,13 +350,15 @@ export function ThreadList({
                 }
               >
                 <Shelf>
-                  {inbox.map((thread) =>
+                  {shelfInbox.map((thread) =>
                     renderActiveThread(thread, "inbox"),
                   )}
                 </Shelf>
               </CollapsibleShelf>
             ) : null}
-            {pinned.length === 0 && inbox.length === 0 ? (
+            {shelfPinned.length === 0 &&
+            shelfInbox.length === 0 &&
+            folderPartition.folderEntries.length === 0 ? (
               <ActiveEmptyState />
             ) : null}
             {/* @slot:parked-shelves (Q5) */}

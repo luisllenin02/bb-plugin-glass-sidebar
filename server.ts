@@ -1,12 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
+import type Database from "better-sqlite3";
 import { z } from "zod";
 import {
+  INBOX_ORDER_CHANNEL,
   ORGANIZATION_CHANNEL,
   type Folder,
   type Organization,
   type ProjectDecorMap,
 } from "./src/organization";
+import {
+  closeWorkflowActivitySource,
+  readWorkflowActivity,
+  workflowStorePath,
+} from "./src/workflow-activity";
 
 const idSchema = z.string().trim().min(1);
 const nameSchema = z.string().trim().min(1).max(80);
@@ -37,8 +44,38 @@ const projectDecorSchema = z.object({
 });
 const okSchema = z.object({ ok: z.literal(true) });
 const emptyInput = z.object({}).strict();
+const orderedThreadIdsSchema = z
+  .array(idSchema)
+  .max(10_000)
+  .superRefine((threadIds, context) => {
+    if (new Set(threadIds).size !== threadIds.length) {
+      context.addIssue({ code: "custom", message: "Thread ids must be unique" });
+    }
+  });
+const workflowRunSchema = z
+  .object({
+    id: z.string(),
+    originThreadId: z.string(),
+    name: z.string(),
+    status: z.enum(["queued", "running"]),
+    phase: z.string().nullable(),
+    startedAt: z.number().int().nonnegative(),
+  })
+  .strict();
+const siblingStoreSourceStatusSchema = z.enum(["ok", "missing", "error"]);
 
 export const glassSidebarRpcContract = defineRpcContract({
+  getWorkflowActivity: {
+    input: emptyInput,
+    output: z
+      .object({
+        runs: z.array(workflowRunSchema),
+        updatedAt: z.number().int().nonnegative(),
+        sourcePath: z.string(),
+        sourceStatus: siblingStoreSourceStatusSchema,
+      })
+      .strict(),
+  },
   getOrganization: { input: emptyInput, output: organizationSchema },
   getProjectDecor: {
     input: emptyInput,
@@ -105,6 +142,24 @@ export const glassSidebarRpcContract = defineRpcContract({
     }),
     output: okSchema,
   },
+  reorderPinned: {
+    input: z
+      .object({
+        threadId: idSchema,
+        previousThreadId: idSchema.nullable(),
+        nextThreadId: idSchema.nullable(),
+      })
+      .strict(),
+    output: z.object({ pinnedThreadIds: z.array(z.string()) }).strict(),
+  },
+  listInboxOrder: {
+    input: emptyInput,
+    output: z.object({ inboxThreadIds: z.array(z.string()) }).strict(),
+  },
+  reorderInbox: {
+    input: z.object({ inboxThreadIds: orderedThreadIdsSchema }).strict(),
+    output: z.object({ inboxThreadIds: z.array(z.string()) }).strict(),
+  },
 });
 
 const migrations = [
@@ -133,6 +188,9 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS thread_lifecycle (
      thread_id TEXT PRIMARY KEY, state TEXT NOT NULL, wake_at INTEGER,
      updated_at INTEGER NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS inbox_order (
+     thread_id TEXT PRIMARY KEY, sort_index INTEGER NOT NULL
    )`,
 ];
 
@@ -184,7 +242,28 @@ function normalizeColor(value: string | null): string | null {
 
 export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
+  const dataDir = (() => {
+    try {
+      const value = (
+        bb.server as { experimental_dataDir?: unknown } | undefined
+      )?.experimental_dataDir;
+      return typeof value === "string" && value.length > 0 ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  const workflowSourcePath = workflowStorePath(db.name, dataDir);
+  const DatabaseConstructor = db.constructor as unknown as new (
+    sourcePath: string,
+    options: { readonly: boolean; fileMustExist: boolean },
+  ) => Database.Database;
+  const openSiblingDatabase = (sourcePath: string) =>
+    new DatabaseConstructor(sourcePath, {
+      readonly: true,
+      fileMustExist: true,
+    });
   bb.storage.migrate(db, migrations);
+  bb.onDispose(() => closeWorkflowActivitySource(workflowSourcePath));
 
   const publishOrganization = (reason: string) => {
     bb.realtime.publish(ORGANIZATION_CHANNEL, { reason });
@@ -273,6 +352,24 @@ export default async function plugin(bb: BbPluginApi) {
     };
   };
 
+  const readInboxOrder = (): string[] =>
+    (
+      db
+        .prepare(
+          `SELECT thread_id FROM inbox_order
+           ORDER BY sort_index ASC, thread_id ASC`,
+        )
+        .all() as Array<{ thread_id: string }>
+    ).map((row) => row.thread_id);
+
+  const replaceInboxOrder = db.transaction((inboxThreadIds: string[]) => {
+    db.prepare(`DELETE FROM inbox_order`).run();
+    const insert = db.prepare(
+      `INSERT INTO inbox_order (thread_id, sort_index) VALUES (?, ?)`,
+    );
+    inboxThreadIds.forEach((threadId, index) => insert.run(threadId, index));
+  });
+
   const readProjectDecor = (): ProjectDecorMap => {
     const rows = db
       .prepare(`SELECT project_id, icon, color, source, updated_at FROM project_decor`)
@@ -291,6 +388,13 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   bb.rpc.register(glassSidebarRpcContract, {
+    getWorkflowActivity: () =>
+      readWorkflowActivity(
+        workflowSourcePath,
+        openSiblingDatabase,
+        Date.now(),
+        (message) => bb.log.warn(message),
+      ),
     getOrganization: () => readOrganization(),
     getProjectDecor: () => ({ decor: readProjectDecor() }),
     createFolder: ({ name, threadIds, colorIndex, customColor }) => {
@@ -450,6 +554,24 @@ export default async function plugin(bb: BbPluginApi) {
       publishOrganization("setProjectAccent");
       return { ok: true as const };
     },
+    reorderPinned: async ({ threadId, previousThreadId, nextThreadId }) => {
+      const reordered = await bb.sdk.threads.reorderPinned({
+        threadId,
+        previousThreadId,
+        nextThreadId,
+      });
+      return {
+        pinnedThreadIds: reordered
+          .filter((thread) => thread.pinnedAt !== null)
+          .map((thread) => thread.id),
+      };
+    },
+    listInboxOrder: () => ({ inboxThreadIds: readInboxOrder() }),
+    reorderInbox: ({ inboxThreadIds }) => {
+      replaceInboxOrder(inboxThreadIds);
+      bb.realtime.publish(INBOX_ORDER_CHANNEL, {});
+      return { inboxThreadIds: readInboxOrder() };
+    },
   });
 
   bb.events.on("thread.deleted", ({ thread }) => {
@@ -466,5 +588,11 @@ export default async function plugin(bb: BbPluginApi) {
       return membership.changes + accent.changes + lifecycle.changes;
     })();
     if (removed > 0) publishOrganization("thread.deleted");
+    // A deleted id must not leave an order row behind that would place a
+    // future thread reusing the id, and stale rows accumulate otherwise.
+    const removedOrder = db
+      .prepare(`DELETE FROM inbox_order WHERE thread_id = ?`)
+      .run(thread.id);
+    if (removedOrder.changes > 0) bb.realtime.publish(INBOX_ORDER_CHANNEL, {});
   });
 }

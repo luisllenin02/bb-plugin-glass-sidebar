@@ -58,3 +58,16 @@ export function accentWash(
     ? `color-mix(in srgb, ${accent} 18%, transparent)`
     : undefined;
 }
+
+/** Display names for the palette, index-aligned with `ACCENT_PALETTE`. */
+export const ACCENT_NAMES = [
+  "none",
+  "blue",
+  "coral",
+  "amber",
+  "green",
+  "pink",
+  "violet",
+  "teal",
+  "orange",
+] as const;

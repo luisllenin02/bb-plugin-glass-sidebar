@@ -40,9 +40,10 @@ test("production bundles stay within their weight and polling budgets", async ()
   const serverSize = (await stat(path.join(root, "dist/server.js"))).size;
   assert.ok(appSize <= 300 * 1024, `dist/app.js is ${appSize} bytes`);
   assert.ok(serverSize <= 800 * 1024, `dist/server.js is ${serverSize} bytes`);
-  assert.ok(
-    (appBundle.match(/setInterval\s*\(/g) ?? []).length <= 2,
-    "only the minute clock and Q3 workflow fallback may use setInterval",
+  assert.equal(
+    (appBundle.match(/setInterval\s*\(/g) ?? []).length,
+    2,
+    "the bundle must contain exactly the minute clock and Q3 workflow fallback",
   );
   assert.doesNotMatch(serverBundle, /setInterval\s*\(/);
   assert.doesNotMatch(serverBundle, /(?:child_process|spawnSync|execFile|fs\.watch)/);
@@ -53,13 +54,16 @@ test("setInterval is confined to the two budgeted frontend owners", async () => 
     path.join(root, "src", "ThreadList.tsx"),
     path.join(root, "src", "useWorkflowActivity.ts"),
   ]);
+  const owners = [];
   for (const filename of await sourceFiles(path.join(root, "src"))) {
     if (!/\.(?:ts|tsx)$/.test(filename)) continue;
     const source = await readFile(filename, "utf8");
     if (/setInterval\s*\(/.test(source)) {
       assert.ok(allowed.has(filename), filename);
+      owners.push(filename);
     }
   }
+  assert.deepEqual(owners.sort(), [...allowed].sort());
 });
 
 test("source uses named Hugeicons catalog imports only", async () => {

@@ -161,3 +161,16 @@ bb theme list
 - Validation: 30 Node contract tests, 62 Vitest tests, TypeScript typecheck,
   `bb plugin build`, and path install passed. Runtime reports
   `liquid-glass@0.5.10` running from the owned workspace.
+
+## Liquid Glass v0.5.11 — 2026-09-03
+
+- Fix: the hosted running-thread footer no longer paints the PageShell
+  `bg-background` layer or its above-footer overflow fade, removing the final
+  smoke band beneath the follow-up composer.
+- Release commit: `5599d83`; tag `v0.5.11` on `main`.
+- GitHub release: https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.11
+- The marketplace entry's `^0.5.4` range already includes this patch, so PR
+  #177 needs no metadata change.
+- Validation: 30 Node contract tests, 62 Vitest tests, TypeScript typecheck,
+  `bb plugin build`, and path install passed. Runtime reports
+  `liquid-glass@0.5.11` running from the owned workspace.

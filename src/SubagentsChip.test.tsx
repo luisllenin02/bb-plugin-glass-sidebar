@@ -45,10 +45,10 @@ function thread(
   };
 }
 
-function renderChildren() {
+function renderChildren(isCompactViewport = false) {
   return renderSlot(
     childrenChip,
-    { threadId: "root", projectId: "proj_1", isCompactViewport: false },
+    { threadId: "root", projectId: "proj_1", isCompactViewport },
     {
       sidebarThreads: {
         status: "ready",
@@ -74,6 +74,9 @@ describe("SubagentsChip", () => {
     const rendered = renderChildren();
     fireEvent.click(screen.getByRole("button", { name: "2 child threads" }));
 
+    expect(screen.getByRole("menu", { name: "Child threads" }).parentElement).toBe(
+      document.body,
+    );
     expect(screen.getByText("Child")).toBeDefined();
     expect(screen.getByText("Grandchild")).toBeDefined();
 
@@ -99,5 +102,12 @@ describe("SubagentsChip", () => {
     fireEvent.contextMenu(child);
 
     expect(screen.getByText("Open in split")).toBeDefined();
+  });
+
+  it("keeps the child count visible in compact mode", () => {
+    renderChildren(true);
+    expect(
+      screen.getByRole("button", { name: "2 child threads" }).textContent,
+    ).toBe("2");
   });
 });

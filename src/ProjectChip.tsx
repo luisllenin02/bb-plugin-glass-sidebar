@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   experimental_useSidebarThreads as useSidebarThreads,
   type PluginThreadHeaderActionProps,
@@ -6,6 +6,7 @@ import {
 import { IconPicker } from "./IconPicker";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { useProjectDecor } from "./useProjectDecor";
+import { useCompactThreadHeaderControl } from "./useCompactThreadHeaderControl";
 
 export function ProjectChip({
   threadId,
@@ -15,6 +16,11 @@ export function ProjectChip({
   const { projects } = useSidebarThreads();
   const decor = useProjectDecor();
   const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const isCompactControl = useCompactThreadHeaderControl(
+    buttonRef,
+    isCompactViewport,
+  );
   const projectName =
     projects.find((project) => project.id === projectId)?.name ?? "Project";
   const projectDecor = decor.decorFor(projectId);
@@ -22,6 +28,7 @@ export function ProjectChip({
   return (
     <>
       <button
+        ref={buttonRef}
         type="button"
         aria-label={`Project icon and colour for ${projectName}`}
         title={projectName}
@@ -34,7 +41,7 @@ export function ProjectChip({
           faviconUrl={null}
           className="size-3.5"
         />
-        {isCompactViewport ? null : (
+        {isCompactControl ? null : (
           <span className="truncate">{projectName}</span>
         )}
       </button>

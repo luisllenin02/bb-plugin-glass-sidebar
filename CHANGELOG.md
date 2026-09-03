@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.4 — 2026-09-03
+
+- The child-thread menu now portals above thread content and is constrained to
+  its owning split pane and the visible viewport, with a dedicated scrolling
+  list for long child trees.
+
+## 1.0.3 — 2026-09-03
+
+- Thread-header controls now respond to each split pane's width, not only the
+  browser width. In a narrow pane, project and parent labels collapse to
+  icons, while the child control retains its readable numeric count.
+
+## 1.0.2 — 2026-09-03
+
+- Child-thread action now releases the enclosing host action group in narrow
+  split panes, while preserving fixed pane controls and allowing the chip's
+  label to truncate rather than be clipped.
+
 ## 1.0.1 — 2026-09-03
 
 - Child-thread header action now releases the host's fixed-width wrapper and

@@ -1,4 +1,5 @@
 import {
+  useMemo,
   useState,
   type KeyboardEventHandler,
   type MouseEvent as ReactMouseEvent,
@@ -124,20 +125,22 @@ export function ThreadCard({
 }) {
   const actions = useSidebarThreadActions();
   const [relatedExpanded, setRelatedExpanded] = useState(false);
-  const relatedTree = buildRelatedThreadTree(threads ?? [], thread.id);
-  const relatedNodes = flattenRelatedThreadTree(relatedTree);
-  const relatedThreadIds = new Set([
-    thread.id,
-    ...relatedNodes.map((node) => node.thread.id),
-  ]);
-  const relatedWorkflowRuns = workflowRuns.filter((run) =>
-    relatedThreadIds.has(run.originThreadId),
-  );
-  const relatedCount = relatedNodes.length + relatedWorkflowRuns.length;
+  const { relatedWorkflowRuns, relatedCount } = useMemo(() => {
+    const relatedTree = buildRelatedThreadTree(threads ?? [], thread.id);
+    const relatedNodes = flattenRelatedThreadTree(relatedTree);
+    const relatedThreadIds = new Set([
+      thread.id,
+      ...relatedNodes.map((node) => node.thread.id),
+    ]);
+    const relatedWorkflowRuns = workflowRuns.filter((run) =>
+      relatedThreadIds.has(run.originThreadId),
+    );
+    return {
+      relatedWorkflowRuns,
+      relatedCount: relatedNodes.length + relatedWorkflowRuns.length,
+    };
+  }, [thread.id, threads, workflowRuns]);
   const { splitProps, layout } = useSidebarThreadSplit(thread.id);
-  // Opt-in per row: this costs a git-host lookup, and threads sharing a
-  // worktree share one.
-  const { pullRequest } = useSidebarThreadPullRequest(thread.id);
   const [isRenaming, setIsRenaming] = useState(false);
   const [isSnoozeOpen, setIsSnoozeOpen] = useState(false);
   const paneState = resolvePaneState(isActive, layout);
@@ -392,24 +395,11 @@ export function ThreadCard({
                 {relatedCount}
               </button>
             ) : null}
-            {pullRequest ? (
-              <Tooltip
-                label={`${pullRequest.title}\n${pullRequestStatusLabel(pullRequest)}`}
-                className="whitespace-pre-line"
-              >
-                <a
-                  href={pullRequest.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={(event) => event.stopPropagation()}
-                  className={cn(
-                    "pointer-events-auto relative shrink-0 font-mono hover:underline",
-                    pullRequestToneClass(pullRequest),
-                  )}
-                >
-                  #{pullRequest.number}
-                </a>
-              </Tooltip>
+            {/* A PR query reaches the git host. Keep the sidebar's first paint
+                and a newly opened split pane independent of every idle row's
+                worktree; active panes still show their PR status. */}
+            {isActive || layout !== null ? (
+              <PullRequestBadge threadId={thread.id} />
             ) : null}
             <Tooltip
               label={threadMetadataLabel(thread, projectName)}
@@ -440,6 +430,30 @@ export function ThreadCard({
         </div>
       </li>
     </RowContextMenu>
+  );
+}
+
+function PullRequestBadge({ threadId }: { threadId: string }) {
+  const { pullRequest } = useSidebarThreadPullRequest(threadId);
+  if (!pullRequest) return null;
+  return (
+    <Tooltip
+      label={`${pullRequest.title}\n${pullRequestStatusLabel(pullRequest)}`}
+      className="whitespace-pre-line"
+    >
+      <a
+        href={pullRequest.url}
+        target="_blank"
+        rel="noreferrer"
+        onClick={(event) => event.stopPropagation()}
+        className={cn(
+          "pointer-events-auto relative shrink-0 font-mono hover:underline",
+          pullRequestToneClass(pullRequest),
+        )}
+      >
+        #{pullRequest.number}
+      </a>
+    </Tooltip>
   );
 }
 

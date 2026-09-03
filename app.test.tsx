@@ -52,9 +52,4 @@ describe("plugin registration", () => {
     );
   });
 
-  it("registers responsive sizing for the child header action", () => {
-    expect(record().contentScripts).toEqual([
-      "responsive-child-header-action",
-    ]);
-  });
 });

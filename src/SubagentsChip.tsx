@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
   experimental_useSidebarThreads as useSidebarThreads,
@@ -13,8 +14,19 @@ import {
   buildRelatedThreadTree,
   flattenRelatedThreadTree,
 } from "./related-thread-tree";
+import { useCompactThreadHeaderControl } from "./useCompactThreadHeaderControl";
+import { usePortalScopeProps } from "./lib/portal-scope";
 
 const MAX_DISCS = 3;
+const MENU_GUTTER = 8;
+const MENU_MAX_WIDTH = 448;
+
+interface MenuGeometry {
+  left: number;
+  maxHeight: number;
+  top: number;
+  width: number;
+}
 
 /**
  * The home for child threads the flat list hides: a chip in the thread header
@@ -31,6 +43,14 @@ export function SubagentsChip({
   const { threads } = useSidebarThreads();
   const actions = useSidebarThreadActions();
   const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [menuGeometry, setMenuGeometry] = useState<MenuGeometry | null>(null);
+  const portalScopeProps = usePortalScopeProps();
+  const isCompactControl = useCompactThreadHeaderControl(
+    rootRef,
+    isCompactViewport,
+  );
 
   const tree = buildRelatedThreadTree(threads, threadId);
   if (tree.length === 0) return null;
@@ -38,6 +58,55 @@ export function SubagentsChip({
   const related = flattenRelatedThreadTree(tree);
   const needsYou = related.some((node) => node.thread.hasPendingInteraction);
   const label = needsYou ? "Needs you" : `${related.length} children`;
+
+  const measureMenu = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger || typeof window === "undefined") return;
+
+    const pane = trigger.closest<HTMLElement>("[data-split-pane-id]");
+    const paneRect = pane?.getBoundingClientRect();
+    const leftEdge = (paneRect?.left ?? 0) + MENU_GUTTER;
+    const rightEdge = (paneRect?.right ?? window.innerWidth) - MENU_GUTTER;
+    const availableWidth = Math.max(0, rightEdge - leftEdge);
+    const width = Math.min(MENU_MAX_WIDTH, availableWidth);
+    const top = Math.max(MENU_GUTTER, trigger.getBoundingClientRect().bottom + 6);
+
+    setMenuGeometry({
+      left: Math.max(leftEdge, rightEdge - width),
+      maxHeight: Math.max(160, window.innerHeight - top - MENU_GUTTER),
+      top,
+      width,
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    measureMenu();
+
+    const trigger = triggerRef.current;
+    const pane = trigger?.closest<HTMLElement>("[data-split-pane-id]");
+    const observer =
+      pane && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(measureMenu)
+        : null;
+    if (observer && pane) observer.observe(pane);
+    window.addEventListener("resize", measureMenu);
+    document.addEventListener("scroll", measureMenu, true);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measureMenu);
+      document.removeEventListener("scroll", measureMenu, true);
+    };
+  }, [measureMenu, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
 
   const openAllInSplit = () => {
     for (const node of related) {
@@ -47,13 +116,17 @@ export function SubagentsChip({
   };
 
   return (
-    <span className="relative">
+    <span ref={rootRef} className="relative">
       <Tooltip label={`${related.length} child threads`} side="bottom">
         <button
           type="button"
           aria-expanded={open}
           aria-label={`${related.length} child threads`}
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => {
+            if (!open) measureMenu();
+            setOpen((value) => !value);
+          }}
+          ref={triggerRef}
           className={cn(
             "flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border px-2 text-2xs text-muted-foreground",
             "hover:bg-accent hover:text-foreground",
@@ -62,24 +135,34 @@ export function SubagentsChip({
           data-glass-sidebar-child-action=""
         >
           <DiscCluster threads={related.map((node) => node.thread)} />
-          {isCompactViewport ? null : (
+          {isCompactControl ? (
+            <span className="shrink-0 tabular-nums">{related.length}</span>
+          ) : (
             <span className="min-w-0 truncate">{label}</span>
           )}
         </button>
       </Tooltip>
-      {open ? (
-        <>
+      {open && menuGeometry && typeof document !== "undefined"
+        ? createPortal(
+          <>
           <span
-            className="fixed inset-0 z-40"
+            className="fixed inset-0 z-[80]"
             onClick={() => setOpen(false)}
             aria-hidden
           />
           <div
             role="menu"
             aria-label="Child threads"
-            className="absolute right-0 top-9 z-50 w-96 max-w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-popover shadow-lg"
+            {...portalScopeProps}
+            style={{
+              left: menuGeometry.left,
+              maxHeight: menuGeometry.maxHeight,
+              top: menuGeometry.top,
+              width: menuGeometry.width,
+            }}
+            className="fixed z-[81] flex flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-lg"
           >
-            <div className="flex items-center gap-2 px-3 pb-1 pt-2.5">
+            <div className="flex shrink-0 items-center gap-2 px-3 pb-1 pt-2.5">
               <span className="text-xs font-semibold">Children</span>
               <span className="text-2xs text-muted-foreground">
                 {related.length}
@@ -95,7 +178,7 @@ export function SubagentsChip({
             <ul
               role="tree"
               aria-label="Related child threads"
-              className="flex max-h-[min(70vh,36rem)] flex-col gap-px overflow-y-auto p-1.5 pt-0.5"
+              className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto p-1.5 pt-0.5"
             >
               {tree.map((node) => (
                 <RelatedThreadNode
@@ -107,8 +190,10 @@ export function SubagentsChip({
               ))}
             </ul>
           </div>
-        </>
-      ) : null}
+          </>,
+          document.body,
+        )
+        : null}
     </span>
   );
 }

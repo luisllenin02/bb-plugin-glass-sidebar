@@ -16,6 +16,11 @@ function record() {
     (calls[name] ??= []).push(definition.id);
   };
   const app = {
+    contentScripts: {
+      register: (definition: { id: string }) => {
+        (calls.contentScripts ??= []).push(definition.id);
+      },
+    },
     slots: new Proxy({}, { get: (_target, name: string) => slot(name) }),
   };
   (setup as unknown as (app: unknown) => void)(app);
@@ -45,5 +50,11 @@ describe("plugin registration", () => {
     expect(existsSync(new URL("./src/ParentChip.tsx", import.meta.url))).toBe(
       true,
     );
+  });
+
+  it("registers responsive sizing for the child header action", () => {
+    expect(record().contentScripts).toEqual([
+      "responsive-child-header-action",
+    ]);
   });
 });

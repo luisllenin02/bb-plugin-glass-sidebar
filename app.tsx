@@ -33,7 +33,38 @@ export const HEADER_ACTIONS = [
   projectAction,
 ] as const;
 
+const RESPONSIVE_CHILD_HEADER_STYLE = `
+[data-bb-plugin="glass-sidebar"] span[role="group"][aria-label="Child threads"] {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  flex-shrink: 1 !important;
+}
+[data-bb-plugin="glass-sidebar"] span[role="group"][aria-label="Child threads"] > * {
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+[data-bb-plugin="glass-sidebar"] button[data-glass-sidebar-child-action] {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  width: 100%;
+}
+[data-bb-plugin="glass-sidebar"] button[data-glass-sidebar-child-action] > span.truncate {
+  min-width: 0;
+}
+`;
+
 export default definePluginApp((app) => {
+  app.contentScripts.register({
+    id: "responsive-child-header-action",
+    mount() {
+      const style = document.createElement("style");
+      style.dataset.bbPlugin = "glass-sidebar-responsive-child-header";
+      style.textContent = RESPONSIVE_CHILD_HEADER_STYLE;
+      document.head.append(style);
+      return () => style.remove();
+    },
+  });
+
   app.slots.experimental_threadList({
     id: "inbox",
     title: "Glass Sidebar",

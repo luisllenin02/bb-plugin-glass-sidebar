@@ -55,14 +55,15 @@ export function SubagentsChip({
           aria-label={`${related.length} child threads`}
           onClick={() => setOpen((value) => !value)}
           className={cn(
-            "flex h-7 items-center gap-1.5 rounded-full border border-border px-2 text-2xs text-muted-foreground",
+            "flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border px-2 text-2xs text-muted-foreground",
             "hover:bg-accent hover:text-foreground",
             open && "bg-accent text-foreground",
           )}
+          data-glass-sidebar-child-action=""
         >
           <DiscCluster threads={related.map((node) => node.thread)} />
           {isCompactViewport ? null : (
-            <span className="truncate">{label}</span>
+            <span className="min-w-0 truncate">{label}</span>
           )}
         </button>
       </Tooltip>

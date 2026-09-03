@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1 — 2026-09-03
+
+- Child-thread header action now releases the host's fixed-width wrapper and
+  shrinks its label with the split pane instead of being clipped.
+
 ## 1.0.0 — 2026-09-03
 
 - First production release of the owned Glass Sidebar plugin.

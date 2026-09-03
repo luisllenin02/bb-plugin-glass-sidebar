@@ -251,3 +251,15 @@ bb theme list
   #177 needs no metadata change.
 - Validation: 30 Node contract tests, 63 Vitest tests, TypeScript typecheck,
   `bb plugin build`, path install, and plugin reload passed.
+
+## Liquid Glass v0.5.17 — 2026-09-03
+
+- Fix: coalesce scroll-state changes to one animation-frame update and avoid
+  redundant collapse writes, while keeping only the prompt card opaque and
+  leaving the environment/permission footer transparent.
+- Release commit: `9a0c762`; tag `v0.5.17` on `main`.
+- GitHub release: https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.17
+- The marketplace entry's `^0.5.4` range already includes this patch, so PR
+  #177 needs no metadata change.
+- Validation: 30 Node contract tests, 63 Vitest tests, TypeScript typecheck,
+  `bb plugin build`, path install, and plugin reload passed.

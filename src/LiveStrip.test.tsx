@@ -213,6 +213,16 @@ describe("OpenPanesRow", () => {
         activeThreadId="thr_a"
         onNavigate={() => {}}
         actions={{ open } as unknown as PluginSidebarThreadActions}
+        workflowRows={[
+          {
+            id: "wfr_queued",
+            originThreadId: "thr_a",
+            name: "Queued workflow",
+            status: "queued",
+            phase: null,
+            startedAt: 500,
+          },
+        ]}
         now={1_000}
       />,
     );
@@ -227,6 +237,10 @@ describe("OpenPanesRow", () => {
       cards.map((card) => card.getAttribute("data-column-thread-id")),
     ).toEqual(expected.map((column) => column.threadId));
     expect(cards[0]!.className).toContain("ring-2");
+    expect(
+      cards[0]!.querySelector('[data-column-workflow-run-id="wfr_queued"]')!
+        .className,
+    ).not.toContain("text-attention");
     fireEvent.click(cards[1]!, { metaKey: true });
     expect(open).toHaveBeenCalledWith("thr_b", { split: true });
   });

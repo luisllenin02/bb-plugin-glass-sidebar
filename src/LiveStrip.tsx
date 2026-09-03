@@ -430,10 +430,7 @@ function ColumnsStrip({
                   <span
                     key={row.id}
                     data-column-workflow-run-id={row.id}
-                    className={cn(
-                      "flex min-w-0 items-center gap-1 text-2xs text-muted-foreground",
-                      row.status === "queued" && "text-attention",
-                    )}
+                    className="flex min-w-0 items-center gap-1 text-2xs text-muted-foreground"
                   >
                     <StatusGlyph indicator="workflow" label={null} />
                     <span className="min-w-0 flex-1 truncate">{row.name}</span>

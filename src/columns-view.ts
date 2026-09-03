@@ -45,20 +45,12 @@ function statusGlyphFor(
 }
 
 /**
- * The workflow snapshot exposes `queued` and `running`, rather than sidebar
- * indicators. Map its waiting class through the same classifier used by Now,
- * then keep the source order stable inside each class.
+ * The workflow snapshot exposes scheduler state only (`queued` / `running`).
+ * Neither state proves that the run needs user attention, so preserve the
+ * authoritative snapshot order until Q3 supplies an explicit indicator.
  */
 function orderWorkflowRows(rows: readonly WorkflowRun[]): WorkflowRun[] {
-  const needsYou: WorkflowRun[] = [];
-  const working: WorkflowRun[] = [];
-  for (const row of rows) {
-    const kind = classifyNow({
-      indicator: row.status === "queued" ? "waiting-for-input" : "workflow",
-    });
-    (kind === "needs-you" ? needsYou : working).push(row);
-  }
-  return [...needsYou, ...working];
+  return [...rows];
 }
 
 /** Build the metadata-only session columns from Q3's existing snapshots. */

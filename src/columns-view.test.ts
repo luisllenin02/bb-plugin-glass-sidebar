@@ -85,7 +85,7 @@ describe("buildColumns", () => {
     });
   });
 
-  it("puts waiting workflow rows before running rows", () => {
+  it("preserves active workflow source order without inferring attention", () => {
     const columns = buildColumns(
       [pane("thr_a", 1)],
       [thread({ id: "thr_a" })],
@@ -94,8 +94,8 @@ describe("buildColumns", () => {
     );
 
     expect(columns[0]!.workflowRows.map((row) => row.id)).toEqual([
-      "queued",
       "running",
+      "queued",
     ]);
   });
 

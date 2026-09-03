@@ -275,3 +275,15 @@ bb theme list
   #177 needs no metadata change.
 - Validation: 30 Node contract tests, 63 Vitest tests, TypeScript typecheck,
   `bb plugin build`, and path install passed.
+
+## Liquid Glass v0.5.19 — 2026-09-03
+
+- Fix: scope the side-chat `bg-sidebar` surface and overflow-fade clears to the
+  sticky composer footer, preserving the secondary panel surface and its Full
+  Screen/close controls.
+- Release commit: `d678ead`; tag `v0.5.19` on `main`.
+- GitHub release: https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.19
+- The marketplace entry's `^0.5.4` range already includes this patch, so PR
+  #177 needs no metadata change.
+- Validation: 30 Node contract tests, 63 Vitest tests, TypeScript typecheck,
+  `bb plugin build`, path install, and plugin reload passed.

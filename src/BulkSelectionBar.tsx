@@ -1,9 +1,11 @@
 import { Icon, type IconName } from "./components/Icon";
+import { SnoozeSelect } from "./SnoozeSelect";
+import type { ConfiguredSnoozePreset } from "./row-props";
 
 export function BulkSelectionBar({
   count,
   busy,
-  lifecycleEnabled,
+  snoozePresets,
   onSettle,
   onSnooze,
   onMarkRead,
@@ -12,7 +14,7 @@ export function BulkSelectionBar({
 }: {
   count: number;
   busy: boolean;
-  lifecycleEnabled: boolean;
+  snoozePresets: readonly ConfiguredSnoozePreset[];
   onSettle: () => void;
   onSnooze: (snoozedUntil: number) => void;
   onMarkRead: () => void;
@@ -32,14 +34,15 @@ export function BulkSelectionBar({
       <ActionButton
         label="Settle selected threads"
         icon="Check"
-        disabled={busy || !lifecycleEnabled}
+        disabled={busy}
         onClick={onSettle}
       />
-      <ActionButton
-        label="Snooze selected threads for one day"
-        icon="Clock"
-        disabled={busy || !lifecycleEnabled}
-        onClick={() => onSnooze(Date.now() + 24 * 60 * 60_000)}
+      <SnoozeSelect
+        label="Snooze selected threads"
+        snoozePresets={snoozePresets}
+        disabled={busy || snoozePresets.length === 0}
+        triggerClassName="h-7 w-9 border-0 px-1.5 py-1 shadow-none hover:bg-sidebar-accent focus:ring-0"
+        onSnooze={onSnooze}
       />
       <ActionButton
         label="Mark selected threads read"

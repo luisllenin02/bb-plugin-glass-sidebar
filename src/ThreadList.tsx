@@ -68,6 +68,7 @@ import {
 import {
   EMPTY_THREAD_SELECTION,
   keepFailedSelection,
+  reconcileThreadSelection,
   updateThreadSelection,
   type ThreadSelectionState,
 } from "./selection";
@@ -450,9 +451,22 @@ export function ThreadList({
       visibleSnoozed,
     ],
   );
-  const selectableThreadIds = selectableThreads.map((thread) => thread.id);
-  const selectedThreads = selectableThreads.filter((thread) =>
-    selection.selectedIds.has(thread.id),
+  const selectableThreadIds = useMemo(
+    () => selectableThreads.map((thread) => thread.id),
+    [selectableThreads],
+  );
+  const selectableThreadIdsKey = selectableThreadIds.join("\0");
+  useEffect(() => {
+    setSelection((current) =>
+      reconcileThreadSelection(current, selectableThreadIds),
+    );
+  }, [selectableThreadIds, selectableThreadIdsKey]);
+  const selectedThreads = useMemo(
+    () =>
+      selectableThreads.filter((thread) =>
+        selection.selectedIds.has(thread.id),
+      ),
+    [selectableThreads, selection.selectedIds],
   );
   const scopeLabel =
     scope === ALL_PROJECTS
@@ -479,20 +493,6 @@ export function ThreadList({
     return true;
   };
 
-  // Parking is refused for a thread that is working or holding a raised hand:
-  // the bulk bar must not be able to hide live work behind a shelf. The
-  // ineligible rows are filtered out of the payload, so neither a mixed
-  // selection nor a race between render and click can park them. A mixed
-  // selection keeps its controls live and parks the eligible rows (Q6 owns
-  // that behaviour on the shared bar); only a wholly ineligible one goes dead.
-  const parkableSelection = selectedThreads.some((thread) =>
-    lifecycle.canPark(thread),
-  );
-  const parkableIds = (targets: readonly PluginSidebarThread[]): string[] =>
-    targets
-      .filter((thread) => lifecycle.canPark(thread))
-      .map((thread) => thread.id);
-
   const finishBulkAction = (result: BulkActionResult) => {
     setSelection(
       keepFailedSelection(
@@ -504,16 +504,90 @@ export function ThreadList({
 
   const runSelectedAction = async (
     action: (threads: readonly PluginSidebarThread[]) => Promise<BulkActionResult>,
+    parksThreads = false,
   ) => {
     if (bulkBusy || selectedThreads.length === 0) return;
     const targets = [...selectedThreads];
     setBulkBusy(true);
     try {
-      finishBulkAction(await action(targets));
+      const result = await action(targets);
+      finishBulkAction(result);
+      if (
+        parksThreads &&
+        activeThreadId !== null &&
+        result.succeededThreadIds.includes(activeThreadId)
+      ) {
+        const parkedIds = new Set(result.succeededThreadIds);
+        const activeRows = [
+          ...folderPartition.folderEntries.flatMap((entry) => entry.members),
+          ...shelfPinned,
+          ...shelfActive,
+          ...shelfInactive,
+        ];
+        const activeIndex = activeRows.findIndex(
+          (thread) => thread.id === activeThreadId,
+        );
+        const nextThread =
+          activeRows
+            .slice(activeIndex + 1)
+            .find((thread) => !parkedIds.has(thread.id)) ??
+          activeRows
+            .slice(0, Math.max(0, activeIndex))
+            .reverse()
+            .find((thread) => !parkedIds.has(thread.id)) ??
+          null;
+        if (nextThread) sidebarActions.open(nextThread.id);
+        else {
+          sidebarActions.openNewThread({
+            projectId: targets[0]?.projectId,
+            focusPrompt: true,
+          });
+        }
+        onNavigate();
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message.trim()
+          : "Unknown error";
+      finishBulkAction({
+        succeededThreadIds: [],
+        failures: targets.map((thread) => ({
+          threadId: thread.id,
+          error: message,
+        })),
+      });
     } finally {
       setBulkBusy(false);
     }
   };
+
+  const runBulkParkAction = (
+    action: "settle" | "snooze",
+    snoozedUntil?: number,
+  ) =>
+    runSelectedAction(
+      async (targets) => {
+        const eligible = targets.filter(lifecycle.canPark);
+        const blocked = targets
+          .filter((thread) => !lifecycle.canPark(thread))
+          .map((thread) => ({
+            threadId: thread.id,
+            error: "Thread is working or needs input",
+          }));
+        const result =
+          eligible.length === 0
+            ? { succeededThreadIds: [], failures: [] }
+            : action === "settle"
+              ? await lifecycle.bulkSettle(eligible.map((thread) => thread.id))
+              : await lifecycle.bulkSnooze(
+                  eligible.map((thread) => thread.id),
+                  snoozedUntil!,
+                );
+        return { ...result, failures: [...result.failures, ...blocked] };
+      },
+      true,
+    );
 
   // Parking the thread you are reading would leave you on a row that is no
   // longer on screen, so navigation follows it: the row below, then the row
@@ -621,16 +695,10 @@ export function ThreadList({
             <BulkSelectionBar
               count={selectedThreads.length}
               busy={bulkBusy}
-              lifecycleEnabled={parkableSelection}
-              onSettle={() =>
-                void runSelectedAction((targets) =>
-                  lifecycle.bulkSettle(parkableIds(targets)),
-                )
-              }
+              snoozePresets={snoozePresets}
+              onSettle={() => void runBulkParkAction("settle")}
               onSnooze={(snoozedUntil) =>
-                void runSelectedAction((targets) =>
-                  lifecycle.bulkSnooze(parkableIds(targets), snoozedUntil),
-                )
+                void runBulkParkAction("snooze", snoozedUntil)
               }
               onMarkRead={() =>
                 void runSelectedAction((targets) =>

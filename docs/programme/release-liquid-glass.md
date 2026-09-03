@@ -214,3 +214,15 @@ bb theme list
   #177 needs no metadata change.
 - Validation: 30 Node contract tests, 62 Vitest tests, TypeScript typecheck,
   `bb plugin build`, path install, and plugin reload passed.
+
+## Glass Sidebar v1.0.1 — 2026-09-03
+
+- Fix: child-thread title-bar action sizing now follows the available split
+  pane width. The plugin releases the host action wrapper's fixed shrink rule
+  and constrains the chip and label to the pane.
+- Release commit: pending; tag `v1.0.1` on `main`.
+- GitHub release: pending.
+- The marketplace entry's `^1.0.0` range already includes this patch, so PR
+  #180 needs no metadata change.
+- Validation: 381 Vitest tests, 10 Node contract tests, TypeScript typecheck,
+  `bb plugin build`, path install, and plugin reload passed.

@@ -136,3 +136,16 @@ bb theme list
 - Validation: 61 Vitest files / 380 tests, 10 Node contract tests, TypeScript
   typecheck, `bb plugin build`, marketplace build/tests/v1 gate/liveness all
   passed. The release worktree is clean on `main`; the path install is running.
+
+## Liquid Glass v0.5.9 — 2026-09-03
+
+- Fix: the new-thread prompt form now has enough selector specificity to
+  override the host's `.bg-background` utility, while the stable
+  `data-promptbox-shell` wrapper and environment strip remain transparent.
+- Release commit: `bbff3cf`; tag `v0.5.9` on `main`.
+- GitHub release: https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.9
+- The marketplace entry's `^0.5.4` range already includes this patch; PR #177
+  needs no metadata change.
+- Validation: 30 Node contract tests, 62 Vitest tests, TypeScript typecheck,
+  `bb plugin build`, and path install passed. Runtime reports
+  `liquid-glass@0.5.9` running from the owned workspace.

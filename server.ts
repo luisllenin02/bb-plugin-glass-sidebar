@@ -184,6 +184,16 @@ const activitySignalSchema = z
   })
   .strict();
 
+/**
+ * One entry of a client's activity snapshot, reduced to the only question the
+ * policy pass asks. `live: false` is as meaningful as `live: true`: it is the
+ * signal that releases a thread the client reported live before.
+ */
+interface LiveSignal {
+  threadId: string;
+  live: boolean;
+}
+
 export const glassSidebarRpcContract = defineRpcContract({
   getWorkflowActivity: {
     input: emptyInput,
@@ -1350,49 +1360,58 @@ export default async function plugin(bb: BbPluginApi) {
   );
 
   /**
-   * Live-work signals last this long. A client only reports them when it reads
-   * `listLifecycle`, so the window has to outlive several sweeps of the
-   * five-minute schedule; auto-settle needs days of quiet anyway, so holding a
-   * thread active a little too long costs nothing, while dropping the signal
-   * hides work the user is watching.
+   * Live work the sidebar can see and the host cannot: a raised hand, a
+   * running workflow, a background command. A client reports the full
+   * snapshot of the threads it renders on every `listLifecycle`, so an id is
+   * added when that snapshot calls the thread live and removed when a later
+   * snapshot calls it quiet. Nothing expires on elapsed time: a long-running
+   * action can stay live for hours without changing anything the host would
+   * report, and a window that closed under it would let the five-minute sweep
+   * park work the user is watching. The end signal is explicit — a quiet
+   * report, or the thread's deletion.
    */
-  const LIVE_SIGNAL_TTL_MS = 15 * 60_000;
   const MAX_LIVE_SIGNAL_ENTRIES = 10_000;
-  /** Thread id -> when a client last reported it live. Insertion order is
-   * recency order, because every write deletes before it sets. */
-  const liveSignalSeenAt = new Map<string, number>();
+  /** Thread ids a client has reported live and has not yet reported quiet.
+   * Insertion order is recency order, because every add deletes first. */
+  const clientLiveThreadIds = new Set<string>();
 
-  const pruneLiveSignals = (now: number) => {
-    for (const [threadId, seenAt] of liveSignalSeenAt) {
-      if (now - seenAt < LIVE_SIGNAL_TTL_MS) break;
-      liveSignalSeenAt.delete(threadId);
+  /**
+   * Applies one client's activity snapshot and returns the ids it called
+   * live. Threads the snapshot does not mention are left as they are: it is
+   * a snapshot of what that client renders, not of every thread that exists,
+   * and another client may be the one watching the rest.
+   */
+  const recordActivitySignals = (
+    signals: readonly LiveSignal[],
+  ): Set<string> => {
+    const live = new Set<string>();
+    for (const signal of signals) {
+      if (signal.live) {
+        live.add(signal.threadId);
+        clientLiveThreadIds.delete(signal.threadId);
+        clientLiveThreadIds.add(signal.threadId);
+      } else {
+        clientLiveThreadIds.delete(signal.threadId);
+      }
     }
-    while (liveSignalSeenAt.size > MAX_LIVE_SIGNAL_ENTRIES) {
-      const oldest = liveSignalSeenAt.keys().next();
+    // A bound on memory, not a policy. Only a client holding ten thousand
+    // simultaneously live threads, none of which it ever reports quiet, can
+    // reach it; the least recently reported goes first.
+    while (clientLiveThreadIds.size > MAX_LIVE_SIGNAL_ENTRIES) {
+      const oldest = clientLiveThreadIds.values().next();
       if (oldest.done) break;
-      liveSignalSeenAt.delete(oldest.value);
+      clientLiveThreadIds.delete(oldest.value);
     }
-  };
-
-  const recordLiveThreads = (
-    threadIds: Iterable<string>,
-    now: number,
-  ): void => {
-    for (const threadId of threadIds) {
-      liveSignalSeenAt.delete(threadId);
-      liveSignalSeenAt.set(threadId, now);
-    }
-    pruneLiveSignals(now);
+    return live;
   };
 
   /**
-   * Everything the server can say is live right now: the fresh client signals
-   * above, plus the Workflows store's own queued and running rows, which are
+   * Everything the server can say is live right now: the client signals above,
+   * plus the Workflows store's own queued and running rows, which are
    * server-side truth and so protect a thread even when no client is open.
    */
   const liveThreadIdsNow = (now: number): Set<string> => {
-    pruneLiveSignals(now);
-    const live = new Set(liveSignalSeenAt.keys());
+    const live = new Set(clientLiveThreadIds);
     try {
       for (const run of readWorkflowActivity(
         workflowSourcePath,
@@ -1422,9 +1441,9 @@ export default async function plugin(bb: BbPluginApi) {
    * decided without chains a fresh pass instead of inheriting its answer.
    */
   const evaluatePolicies = (
-    liveThreadIds: ReadonlySet<string> = new Set(),
+    signals: readonly LiveSignal[] = [],
   ): Promise<string[]> => {
-    recordLiveThreads(liveThreadIds, Date.now());
+    const liveThreadIds = recordActivitySignals(signals);
     if (policyEvaluation !== null) {
       const inFlight = policyEvaluation;
       const missed =
@@ -1433,7 +1452,7 @@ export default async function plugin(bb: BbPluginApi) {
           (threadId) => policyEvaluationLive?.has(threadId) !== true,
         );
       if (!missed) return inFlight;
-      return inFlight.then(() => evaluatePolicies(liveThreadIds));
+      return inFlight.then(() => evaluatePolicies(signals));
     }
     policyEvaluationLive = new Set(liveThreadIds);
     policyEvaluationDecided = false;
@@ -1871,15 +1890,16 @@ export default async function plugin(bb: BbPluginApi) {
       // The policy pass runs here rather than through a fifth mount RPC. A
       // failure must not cost the user their shelves, so it is logged and the
       // stored rows are answered either way.
-      const live = new Set(
-        signals
-          .filter(
-            (signal) => signal.hasPendingInteraction || signal.isWorking,
-          )
-          .map((signal) => signal.threadId),
-      );
+      //
+      // The whole snapshot goes through, not just its live rows: a thread the
+      // client reported live earlier stays protected until a report says it
+      // has gone quiet, and this is the only place that report can arrive.
+      const activity = signals.map((signal) => ({
+        threadId: signal.threadId,
+        live: signal.hasPendingInteraction || signal.isWorking,
+      }));
       try {
-        await evaluatePolicies(live);
+        await evaluatePolicies(activity);
       } catch (error) {
         bb.log.error(
           `Automatic settle evaluation failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -1991,6 +2011,8 @@ export default async function plugin(bb: BbPluginApi) {
         .prepare(`DELETE FROM thread_accents WHERE thread_id = ?`)
         .run(thread.id);
       const lifecycle = deleteLifecycle.run(thread.id);
+      // The other way a live signal ends: the thread it protects is gone.
+      clientLiveThreadIds.delete(thread.id);
       return {
         organization: membership.changes + accent.changes,
         lifecycle: lifecycle.changes,

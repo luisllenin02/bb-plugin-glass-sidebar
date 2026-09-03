@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { createElement } from "react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type {
   PluginSidebarThread,
@@ -70,14 +71,16 @@ const props: PluginThreadListProps = {
 } as unknown as PluginThreadListProps;
 
 function renderList(
-  threads: readonly PluginSidebarThread[],
+  // Held by reference, not copied: a test that mutates this array and
+  // re-renders is standing in for a host thread-list update.
+  threads: PluginSidebarThread[],
   rows: StoredLifecycleRow[],
   overrides: Record<string, (input: never) => unknown> = {},
 ) {
   return renderSlot<PluginThreadListProps>(inbox, props, {
     sidebarThreads: {
       status: "ready",
-      threads: [...threads],
+      threads,
       projects: [{ id: "project", name: "Project", isPersonal: false }],
     },
     rpc: {
@@ -160,6 +163,49 @@ describe("useLifecycle mount budget", () => {
       },
       {
         threadId: "thr_quiet",
+        hasPendingInteraction: false,
+        isWorking: false,
+      },
+    ]);
+  });
+
+  it("re-reads when a thread stops working, so the server can release it", async () => {
+    // The host revision key has to carry the live-work fields, not just
+    // `updatedAt`: the server holds a thread this client reported live until a
+    // later report says it went quiet, and a thread can finish a background
+    // action without the host bumping `updatedAt`. If this refresh never
+    // fires, that release is never sent and the thread is protected forever.
+    const working = thread({
+      id: "thr_stops",
+      activity: {
+        workflows: 1,
+        backgroundAgents: 0,
+        backgroundCommands: 0,
+        planMode: 0,
+        goals: 0,
+      },
+    });
+    const threads = [working];
+    const rendered = renderList(threads, []);
+    await waitFor(() =>
+      expect(callsTo(rendered.rpcCalls, "listLifecycle")).toBe(1),
+    );
+
+    // Same id, same `updatedAt`: only the work stopped.
+    threads[0] = thread({ id: "thr_stops", updatedAt: working.updatedAt });
+    await act(async () => {
+      rendered.lifecycle.rerender(createElement(inbox.component, props));
+    });
+
+    await waitFor(() =>
+      expect(callsTo(rendered.rpcCalls, "listLifecycle")).toBe(2),
+    );
+    const latest = rendered.rpcCalls
+      .filter((entry) => entry.method === "listLifecycle")
+      .at(-1) as { input: { signals: Array<Record<string, unknown>> } };
+    expect(latest.input.signals).toEqual([
+      {
+        threadId: "thr_stops",
         hasPendingInteraction: false,
         isWorking: false,
       },

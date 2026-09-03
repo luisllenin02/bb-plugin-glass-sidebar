@@ -1,5 +1,5 @@
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin, { type StoredLifecycleRow } from "../server";
 import { legacyLifecycleColumns } from "./lifecycle";
 
@@ -601,6 +601,73 @@ describe("automatic settle evaluation", () => {
     await harness.behavior.runSchedule("auto-settle");
     expect(rawRows(db)).toEqual([]);
     expect(lifecycleSignals(harness)).toEqual([]);
+  });
+
+  it("holds a live thread indefinitely and releases it only when the client reports it quiet", async () => {
+    // The failure this guards: live protection that expires on wall time. A
+    // background action or a raised hand can stay live for hours without the
+    // host reporting anything new, so nothing but an explicit quiet report
+    // (or the thread's deletion) may end the hold.
+    const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
+    const { harness, db } = await loadPlugin({
+      threads: async () => [
+        makeThreadResponse({
+          id: "thr_live_long",
+          createdAt: old,
+          updatedAt: old,
+          latestAttentionAt: old,
+          status: "idle",
+        }),
+      ],
+    });
+
+    await harness.behavior.callRpc("listLifecycle", {
+      signals: [
+        {
+          threadId: "thr_live_long",
+          hasPendingInteraction: true,
+          isWorking: false,
+        },
+      ],
+    });
+    expect(rawRows(db)).toEqual([]);
+
+    // Sixteen minutes later — past any plausible expiry window — with no
+    // further report of any kind, the scheduled sweep must still spare it.
+    const realNow = Date.now;
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockImplementation(() => realNow() + 16 * 60_000);
+    try {
+      await harness.behavior.runSchedule("auto-settle");
+      expect(rawRows(db)).toEqual([]);
+      expect(lifecycleSignals(harness)).toEqual([]);
+
+      // The same snapshot that carried the live signal now carries its end,
+      // and the evaluation it drives may park the thread.
+      await harness.behavior.callRpc("listLifecycle", {
+        signals: [
+          {
+            threadId: "thr_live_long",
+            hasPendingInteraction: false,
+            isWorking: false,
+          },
+        ],
+      });
+      expect(
+        rawRows(db).map((row) => ({ id: row.thread_id, state: row.state })),
+      ).toEqual([{ id: "thr_live_long", state: "settled" }]);
+      expect(lifecycleSignals(harness)).toEqual([
+        { channel: "lifecycle", payload: { threadIds: ["thr_live_long"] } },
+      ]);
+
+      // And a later sweep is idempotent over that decision.
+      await harness.behavior.runSchedule("auto-settle");
+      expect(lifecycleSignals(harness)).toHaveLength(1);
+      expect(rawRows(db)).toHaveLength(1);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("merges a client's live set into a sweep that is already in flight", async () => {

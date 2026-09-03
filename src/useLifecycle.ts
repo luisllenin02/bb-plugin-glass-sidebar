@@ -243,9 +243,17 @@ export function useLifecycle(
   }, [refresh]);
 
   // A host thread-list revision is the other signal that can change a policy
-  // outcome (new activity, a new pin), so it drives the next evaluation.
+  // outcome (new activity, a new pin), so it drives the next evaluation. The
+  // two live-work fields belong in the key as much as `updatedAt` does: the
+  // server holds a thread this client reported live until a later report says
+  // it went quiet, and a thread can stop working or drop its raised hand
+  // without the host bumping `updatedAt`. Leaving them out would mean that
+  // release is never sent.
   const threadListRevision = threads
-    .map((thread) => `${thread.id}:${thread.updatedAt}`)
+    .map(
+      (thread) =>
+        `${thread.id}:${thread.updatedAt}:${thread.hasPendingInteraction ? 1 : 0}:${isWorking(thread) ? 1 : 0}`,
+    )
     .join("");
   const lastRevision = useRef(threadListRevision);
   useEffect(() => {

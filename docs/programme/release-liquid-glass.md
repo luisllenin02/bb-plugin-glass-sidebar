@@ -194,9 +194,10 @@ bb theme list
   simple descendant matching and important precedence; clear the hosted
   `bg-background` footer, its `chat-prompt-box` wrapper, composer seams, and
   above-footer overflow fade so the bottom dock is fully transparent.
-- Release commit: pending; tag `v0.5.13` on `main`.
-- GitHub release: pending.
+- Release commit: `d24dfbe`; tag `v0.5.13` on `main`.
+- GitHub release: https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.13
 - The marketplace entry's `^0.5.4` range already includes this patch, so PR
   #177 needs no metadata change.
 - Validation: 30 Node contract tests, 62 Vitest tests, TypeScript typecheck,
-  `bb plugin build`, and path install passed.
+  `bb plugin build`, and path install passed. Runtime reports
+  `liquid-glass@0.5.13` running from the owned workspace.

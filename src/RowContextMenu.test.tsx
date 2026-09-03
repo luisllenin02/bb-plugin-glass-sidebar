@@ -97,6 +97,19 @@ afterEach(() => {
 });
 
 describe("RowContextMenu Q1 base", () => {
+  it("opens this plugin's project icon and colour picker", async () => {
+    renderMenu();
+    const menu = await openMenu();
+    fireEvent.click(
+      within(menu).getByRole("menuitem", { name: "Project icon & colour…" }),
+    );
+    expect(
+      await screen.findByRole("dialog", {
+        name: "Project icon and colour for project",
+      }),
+    ).toBeTruthy();
+  });
+
   it("opens normally or in a split and exposes native actions", async () => {
     const rendered = renderMenu();
     let menu = await openMenu();

@@ -9,6 +9,12 @@ and carry project glyphs and colours through the list.
 
 The derived plugin id is `glass-sidebar`.
 
+Glass Sidebar owns its project icon and colour store, classifier, picker, and
+header chip. The public Plugin SDK cannot replace the host title bar's own
+project icon, so the chip sits beside the title. Keeping ariofrio's Project
+Icons installed is the only way to retain an in-title icon; the two plugins are
+independent and Glass Sidebar never reads Project Icons' SQLite database.
+
 ## No polling
 
 Glass Sidebar does not poll in the background. Host thread data, organization

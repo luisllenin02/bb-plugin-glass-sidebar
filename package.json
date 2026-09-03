@@ -20,10 +20,19 @@
     "skills": []
   },
   "scripts": {
+    "build:catalog": "node scripts/build-icon-catalog.mjs",
     "build": "bb plugin build",
     "test": "vitest run --config vitest.config.ts && node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
+  "files": [
+    "app.tsx",
+    "server.ts",
+    "src/",
+    "assets/",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "zod": "^4.3.6"
   },

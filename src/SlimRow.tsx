@@ -100,6 +100,8 @@ export function SlimRow({
       onUnsettle={shelf === "settled" ? onRestore : undefined}
       onRename={() => setIsRenaming(true)}
       projectIconsAvailable={projectIconsAvailable}
+      projectName={projectName}
+      projectDecor={projectDecor}
     >
       <li className="list-none">
         <div

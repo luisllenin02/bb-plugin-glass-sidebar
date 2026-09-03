@@ -5,6 +5,7 @@ import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { ThreadList } from "./src/ThreadList";
 import { ParentChip } from "./src/ParentChip";
 import { SubagentsChip } from "./src/SubagentsChip";
+import { ProjectChip } from "./src/ProjectChip";
 
 const parentAction = {
   id: "parent",
@@ -18,10 +19,17 @@ const childrenAction = {
   component: SubagentsChip,
 } as const;
 
+const projectAction = {
+  id: "project",
+  title: "Project",
+  component: ProjectChip,
+} as const;
+
 export const HEADER_ACTIONS = [
   parentAction,
   childrenAction,
   /* @header-actions (Q4) */
+  projectAction,
 ] as const;
 
 export default definePluginApp((app) => {

@@ -71,3 +71,92 @@ export const ACCENT_NAMES = [
   "teal",
   "orange",
 ] as const;
+
+export const PROJECT_ICON_COLOR_NAMES = [
+  "red",
+  "orange",
+  "yellow",
+  "green",
+  "teal",
+  "blue",
+  "purple",
+  "pink",
+] as const;
+
+export type ProjectIconColorName = (typeof PROJECT_ICON_COLOR_NAMES)[number];
+
+interface ProjectIconColorAnchor {
+  hue: number;
+  light: { lightness: number; chroma: number };
+  dark: { lightness: number; chroma: number };
+}
+
+// Copied verbatim from ariofrio/bb-plugins' project-icon-colors.ts so the
+// owned header chip and sidebar glyph use the same accessible colour anchors.
+const PROJECT_ICON_COLOR_ANCHORS: Record<
+  ProjectIconColorName,
+  ProjectIconColorAnchor
+> = {
+  red: {
+    hue: 23.5,
+    light: { lightness: 0.531, chroma: 0.212 },
+    dark: { lightness: 0.8, chroma: 0.103 },
+  },
+  orange: {
+    hue: 52.9,
+    light: { lightness: 0.595, chroma: 0.151 },
+    dark: { lightness: 0.72, chroma: 0.179 },
+  },
+  yellow: {
+    hue: 95,
+    light: { lightness: 0.52, chroma: 0.107 },
+    dark: { lightness: 0.8, chroma: 0.159 },
+  },
+  green: {
+    hue: 140,
+    light: { lightness: 0.56, chroma: 0.171 },
+    dark: { lightness: 0.729, chroma: 0.235 },
+  },
+  teal: {
+    hue: 191.6,
+    light: { lightness: 0.556, chroma: 0.086 },
+    dark: { lightness: 0.793, chroma: 0.136 },
+  },
+  blue: {
+    hue: 256,
+    light: { lightness: 0.522, chroma: 0.175 },
+    dark: { lightness: 0.72, chroma: 0.148 },
+  },
+  purple: {
+    hue: 306,
+    light: { lightness: 0.6, chroma: 0.279 },
+    dark: { lightness: 0.8, chroma: 0.128 },
+  },
+  pink: {
+    hue: 345.5,
+    light: { lightness: 0.52, chroma: 0.207 },
+    dark: { lightness: 0.72, chroma: 0.21 },
+  },
+};
+
+export function projectIconColorCss(
+  color: ProjectIconColorName | null,
+): string | undefined {
+  if (color === null) return undefined;
+  const { hue, light, dark } = PROJECT_ICON_COLOR_ANCHORS[color];
+  return `light-dark(oklch(${light.lightness} ${light.chroma} ${hue}), oklch(${dark.lightness} ${dark.chroma} ${hue}))`;
+}
+
+/** Stable project-colour index, matching monocode's `tabGroupColor` hash. */
+export function autoProjectPaletteIndex(projectId: string): number {
+  let hash = 0;
+  for (let index = 0; index < projectId.length; index += 1) {
+    hash = (hash * 31 + projectId.charCodeAt(index)) >>> 0;
+  }
+  return (hash % (ACCENT_PALETTE.length - 1)) + 1;
+}
+
+/** The single CSS definition of automatic project colours. */
+export function autoProjectColorCss(projectId: string): string {
+  return ACCENT_PALETTE[autoProjectPaletteIndex(projectId)]!;
+}

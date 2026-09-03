@@ -168,6 +168,8 @@ export function ThreadCard({
       organization={organization}
       onFolderCreated={onFolderCreated}
       projectIconsAvailable={projectIconsAvailable}
+      projectName={projectName}
+      projectDecor={projectDecor}
     >
       <li
         className={cn(

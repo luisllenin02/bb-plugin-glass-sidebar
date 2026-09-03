@@ -8,7 +8,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
 
 import setup, { HEADER_ACTIONS } from "./app";
 
-export const EXPECTED_HEADER_ACTIONS = ["parent", "children"] as const;
+export const EXPECTED_HEADER_ACTIONS = ["parent", "children", "project"] as const;
 
 function record() {
   const calls: Record<string, string[]> = {};

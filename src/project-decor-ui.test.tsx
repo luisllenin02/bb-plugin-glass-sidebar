@@ -179,7 +179,7 @@ describe("project decor consumers", () => {
     expect(await screen.findByRole("dialog")).toBeTruthy();
   });
 
-  it("feeds one decor map to the row and folder header", async () => {
+  it("feeds one decor map to the row, folder header, and live-strip chip", async () => {
     renderSlot(
       inbox,
       {
@@ -193,7 +193,7 @@ describe("project decor consumers", () => {
       {
         sidebarThreads: {
           status: "ready",
-          threads: [thread()],
+          threads: [thread({ indicator: "runtime", indicatorLabel: "Working" })],
           projects: [{ id: "proj_1", name: "Project One", isPersonal: false }],
         },
         rpc: {
@@ -253,6 +253,16 @@ describe("project decor consumers", () => {
       projectIconColorCss("blue"),
     );
     expect(row.dataset.projectAccentSource).toBe("project-decor");
+
+    const stripChip = document.querySelector<HTMLElement>(
+      '[data-live-strip="now"]',
+    )!;
+    const stripDot = [...stripChip.querySelectorAll<HTMLElement>("span")].find(
+      (node) => node.style.getPropertyValue("--thread-accent"),
+    );
+    expect(stripDot?.style.getPropertyValue("--thread-accent")).toBe(
+      projectIconColorCss("blue"),
+    );
   });
 });
 

@@ -220,9 +220,34 @@ bb theme list
 - Fix: child-thread title-bar action sizing now follows the available split
   pane width. The plugin releases the host action wrapper's fixed shrink rule
   and constrains the chip and label to the pane.
-- Release commit: pending; tag `v1.0.1` on `main`.
-- GitHub release: pending.
+- Release commit: `f472cfe`; tag `v1.0.1` on `main`.
+- GitHub release: https://github.com/luisllenin02/bb-plugin-glass-sidebar/releases/tag/v1.0.1
 - The marketplace entry's `^1.0.0` range already includes this patch, so PR
   #180 needs no metadata change.
 - Validation: 381 Vitest tests, 10 Node contract tests, TypeScript typecheck,
+  `bb plugin build`, path install, and plugin reload passed.
+
+## Liquid Glass v0.5.15 — 2026-09-03
+
+- Fix: match the running-thread prompt card to the raised surface used by the
+  goal, todo, and queue cards; add scroll-state content-script behavior that
+  collapses the follow-up composer away from the latest event and restores it
+  at the bottom or on focus.
+- Release commit: `fcc9bcb`; tag `v0.5.15` on `main`.
+- GitHub release: https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.15
+- The marketplace entry's `^0.5.4` range already includes this patch, so PR
+  #177 needs no metadata change.
+- Validation: 30 Node contract tests, 63 Vitest tests, TypeScript typecheck,
+  `bb plugin build`, path install, and plugin reload passed.
+
+## Liquid Glass v0.5.16 — 2026-09-03
+
+- Fix: apply the raised surface to the complete running follow-up composer,
+  support page/window-scrolling thread layouts, and add direct compact-layout
+  fallbacks for Chromium style-query behavior.
+- Release commit: `680bd23`; tag `v0.5.16` on `main`.
+- GitHub release: https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.16
+- The marketplace entry's `^0.5.4` range already includes this patch, so PR
+  #177 needs no metadata change.
+- Validation: 30 Node contract tests, 63 Vitest tests, TypeScript typecheck,
   `bb plugin build`, path install, and plugin reload passed.

@@ -1,23 +1,25 @@
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
+import type { CSSProperties } from "react";
+import { ACCENT_PALETTE } from "./accent";
+
+type DiscStyle = CSSProperties & { "--disc-color": string };
 
 /**
  * A per-thread dot. Colour comes from the thread's id so the same thread keeps
- * the same colour everywhere it appears, and every hue is a rotation of one
- * accent, so a custom palette still applies.
+ * the same colour everywhere it appears. Every colour comes from the shared
+ * accent palette, so it follows the plugin's contracted theme vocabulary.
  *
  * `thread` is null for the "and more" disc in a cluster.
  */
 export function Disc({ thread }: { thread: PluginSidebarThread | null }) {
-  const hue = thread === null ? 0 : hashHue(thread.id);
+  const color =
+    thread === null
+      ? "var(--muted-foreground)"
+      : ACCENT_PALETTE[1 + (hashHue(thread.id) % (ACCENT_PALETTE.length - 1))]!;
   return (
     <span
-      className="inline-block size-3.5 shrink-0 rounded-full border border-background"
-      style={{
-        backgroundColor:
-          thread === null
-            ? "var(--muted-foreground)"
-            : `oklch(0.72 0.13 ${hue})`,
-      }}
+      className="inline-block size-3.5 shrink-0 rounded-full border border-background bg-[var(--disc-color)]"
+      style={{ "--disc-color": color } as DiscStyle}
     />
   );
 }

@@ -42,6 +42,7 @@ import {
   buildRelatedThreadTree,
   flattenRelatedThreadTree,
 } from "./related-thread-tree";
+import { pullRequestToneClass, WOKE_TONE_CLASS } from "./status-tone";
 
 export interface ThreadReorderControls {
   disabled: boolean;
@@ -270,7 +271,8 @@ export function ThreadCard({
                   }}
                   className={cn(
                     STATUS_SLOT_CLASS,
-                    "pointer-events-auto justify-end text-2xs font-medium text-amber-700 hover:underline dark:text-amber-300",
+                    "pointer-events-auto justify-end text-2xs font-medium hover:underline",
+                    WOKE_TONE_CLASS,
                   )}
                 >
                   Woke
@@ -550,33 +552,6 @@ function pullRequestStatusLabel(pullRequest: PluginSidebarPullRequest): string {
         ? "Open"
         : pullRequest.state[0]!.toUpperCase() + pullRequest.state.slice(1);
   }
-}
-
-function pullRequestToneClass(pullRequest: PluginSidebarPullRequest): string {
-  if (pullRequest.state === "merged" || pullRequest.attention === "merged") {
-    return "text-violet-600 dark:text-violet-300/90";
-  }
-  if (
-    pullRequest.attention === "blocked" ||
-    pullRequest.attention === "changes_requested" ||
-    pullRequest.attention === "checks_failed" ||
-    pullRequest.attention === "conflicts"
-  ) {
-    return "text-red-600 dark:text-red-300/90";
-  }
-  if (
-    pullRequest.state === "draft" ||
-    pullRequest.attention === "draft"
-  ) {
-    return "text-muted-foreground/60";
-  }
-  if (pullRequest.state === "closed" || pullRequest.attention === "closed") {
-    return "text-red-600 dark:text-red-300/90";
-  }
-  if (pullRequest.state === "open") {
-    return "text-emerald-600 dark:text-emerald-300/90";
-  }
-  return "text-muted-foreground";
 }
 
 function ParkButton({

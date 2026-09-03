@@ -27,6 +27,7 @@ import type {
   ProjectDecorEntry,
   ResolvedAccentSource,
 } from "./row-props";
+import { WOKE_TONE_CLASS } from "./status-tone";
 
 /**
  * Search is a separate flat mode. A parked match must not disappear behind
@@ -248,8 +249,8 @@ function SearchResultRow({
         <span
           className={cn(
             STATUS_SLOT_CLASS,
-            isWoke &&
-              "justify-end text-2xs font-medium text-amber-700 dark:text-amber-300",
+            isWoke && "justify-end text-2xs font-medium",
+            isWoke && WOKE_TONE_CLASS,
           )}
         >
           {isWoke ? "Woke" : <StatusOrTime thread={thread} now={now} />}

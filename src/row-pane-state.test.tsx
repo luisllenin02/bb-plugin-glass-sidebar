@@ -22,6 +22,7 @@ const app = await loadPluginApp(() => import("../app"));
 const inbox = app.threadLists[0]!;
 const { ThreadCard } = await import("./ThreadCard");
 const { SlimRow } = await import("./SlimRow");
+const { SearchResults } = await import("./SearchResults");
 
 function thread(
   overrides: Partial<PluginSidebarThread> = {},
@@ -232,5 +233,39 @@ describe("row accent", () => {
     expect(row.dataset.threadPaneState).toBe("focused");
     expect(row.className).toContain("ring-primary/60");
     expect(screen.getByLabelText(/^Selected, /)).toBeTruthy();
+  });
+});
+
+describe("semantic row tones", () => {
+  it("renders a Woke card with the host warning token", () => {
+    renderSlot({ component: ThreadCard }, { ...cardProps, isWoke: true });
+
+    const marker = screen.getByRole("button", {
+      name: "Dismiss Woke marker",
+    });
+    expect(marker.className).toContain("text-warning");
+    expect(marker.className).not.toMatch(/(?:amber|orange|yellow)-\d/);
+  });
+
+  it("renders a Woke search result with the same host warning token", () => {
+    renderSlot(
+      { component: SearchResults },
+      {
+        threads: [thread()],
+        projectNameById: new Map([["proj_1", "bb"]]),
+        projectIconRevision: 0,
+        activeThreadId: null,
+        now: 1_000,
+        wokeThreadIds: new Set(["thr_1"]),
+        onAcknowledgeWake: () => {},
+        selectedThreadIds: new Set<string>(),
+        onSelectionClick: () => false,
+        onNavigate: () => {},
+      },
+    );
+
+    const marker = screen.getByText("Woke");
+    expect(marker.className).toContain("text-warning");
+    expect(marker.className).not.toMatch(/(?:amber|orange|yellow)-\d/);
   });
 });

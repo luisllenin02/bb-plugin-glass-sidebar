@@ -1,10 +1,15 @@
+import Database from "better-sqlite3";
 import {
   createFakePluginHost,
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import plugin from "../server";
 import type { Folder, Organization } from "./organization";
+import { workflowStorePath } from "./workflow-activity";
 
 interface CreatedFolderResult {
   folder: Folder;
@@ -33,6 +38,68 @@ async function loadPlugin() {
   disposers.push(() => harness.lifecycle.dispose());
   return harness;
 }
+
+describe("workflow activity RPC", () => {
+  it("reads active workflow rows from the host experimental data directory", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "glass-sidebar-workflow-rpc-"));
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "glass-sidebar",
+      dataDir,
+    });
+    const sourcePath = workflowStorePath(bb.storage.database().name, dataDir);
+    mkdirSync(dirname(sourcePath), { recursive: true });
+    const source = new Database(sourcePath);
+    source.exec(`CREATE TABLE workflow_runs (
+      id TEXT PRIMARY KEY,
+      origin_thread_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL,
+      phase TEXT,
+      started_at INTEGER,
+      created_at INTEGER NOT NULL
+    )`);
+    source
+      .prepare(
+        `INSERT INTO workflow_runs
+           (id, origin_thread_id, name, status, phase, started_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "wfr_active",
+        "thr_origin",
+        "glass-sidebar",
+        "running",
+        "Produce 2/3",
+        123,
+        100,
+      );
+    source.close();
+
+    try {
+      await plugin(bb);
+      await expect(
+        harness.behavior.callRpc("getWorkflowActivity", {}),
+      ).resolves.toEqual({
+        runs: [
+          {
+            id: "wfr_active",
+            originThreadId: "thr_origin",
+            name: "glass-sidebar",
+            status: "running",
+            phase: "Produce 2/3",
+            startedAt: 123,
+          },
+        ],
+        updatedAt: expect.any(Number),
+        sourcePath,
+        sourceStatus: "ok",
+      });
+    } finally {
+      await harness.lifecycle.dispose();
+      rmSync(dataDir, { recursive: true });
+    }
+  });
+});
 
 describe("organization RPC", () => {
   it("round-trips a created folder through plugin SQLite", async () => {

@@ -24,6 +24,9 @@ const { ThreadCard } = await import("./ThreadCard");
 const { SlimRow } = await import("./SlimRow");
 const { SearchResults } = await import("./SearchResults");
 
+/** Recent enough that Q5's default 6-hour Inactive rule does not apply. */
+const RECENT_ACTIVITY = Date.now() - 60_000;
+
 function thread(
   overrides: Partial<PluginSidebarThread> = {},
 ): PluginSidebarThread {
@@ -53,9 +56,11 @@ function thread(
     environment: null,
     host: null,
     createdAt: 100,
-    updatedAt: 100,
-    lastReadAt: 100,
-    latestAttentionAt: 100,
+    // Q5: recent activity, so the default 6-hour Inactive rule leaves this
+    // fixture on the Active shelf. Ordering still comes from createdAt.
+    updatedAt: RECENT_ACTIVITY,
+    lastReadAt: RECENT_ACTIVITY,
+    latestAttentionAt: RECENT_ACTIVITY,
     ...overrides,
   };
 }
@@ -160,14 +165,15 @@ describe("row pane state", () => {
     expect(focused).not.toBe(idle);
   });
 
-  it("draws a rail on the focused row and none on an idle uncoloured row", () => {
+  it("draws a rail on focused and automatically coloured idle rows", () => {
     renderInbox(
       [thread({ id: "thr_1" }), thread({ id: "thr_2", title: "Another" })],
       { activeThreadId: "thr_1" },
     );
 
     expect(rowFor("thr_1").querySelector("[data-accent-rail]")).toBeTruthy();
-    expect(rowFor("thr_2").querySelector("[data-accent-rail]")).toBeNull();
+    expect(rowFor("thr_2").querySelector("[data-accent-rail]")).toBeTruthy();
+    expect(rowFor("thr_2").dataset.projectAccentSource).toBe("auto");
   });
 });
 

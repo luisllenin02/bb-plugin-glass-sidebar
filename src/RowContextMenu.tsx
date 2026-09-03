@@ -1,7 +1,7 @@
 // Extension rule for Q2-Q6: leave every anchor comment in place.
 // Insert content immediately after your own anchor.
 // Never edit, move, or reorder another packet's anchor.
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
@@ -12,6 +12,8 @@ import { AccentPicker, accentValueFromCss } from "./AccentPicker";
 import { cn } from "./lib/utils";
 import { threadDisplayTitle } from "./inbox";
 import { uniqueFolderName } from "./organization";
+import { IconPicker } from "./IconPicker";
+import type { ProjectDecorEntry } from "./row-props";
 import type {
   ConfiguredSnoozePreset,
   DecorAccess,
@@ -35,7 +37,8 @@ export function RowContextMenu({
   decor,
   lifecycle,
   onFolderCreated,
-  projectIconsAvailable = false,
+  projectName,
+  projectDecor,
 }: {
   thread: PluginSidebarThread;
   children: ReactNode;
@@ -52,12 +55,17 @@ export function RowContextMenu({
   lifecycle?: LifecycleAccess;
   onFolderCreated?: (folderId: string) => void;
   projectIconsAvailable?: boolean;
+  projectName?: string | null;
+  projectDecor?: ProjectDecorEntry | null;
 }) {
   const actions = useSidebarThreadActions();
   const folder = organization?.folderOf(thread.id) ?? null;
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const effectiveDecor = projectDecor ?? decor?.decorFor(thread.projectId) ?? null;
 
   return (
-    <ContextMenu.Root>
+    <>
+      <ContextMenu.Root>
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content
@@ -83,6 +91,9 @@ export function RowContextMenu({
           ) : null}
           <CopySubmenu thread={thread} />
           {/* @menu:decor (Q4) */}
+          <Item onSelect={() => setProjectPickerOpen(true)}>
+            Project icon &amp; colour…
+          </Item>
           {/* @menu:organization (Q2) */}
           {organization ? (
             <>
@@ -107,6 +118,12 @@ export function RowContextMenu({
             </>
           ) : null}
           {/* @menu:lifecycle (Q5) */}
+          {onSettle ? <Item onSelect={onSettle}>Settle</Item> : null}
+          {onUnsettle ? <Item onSelect={onUnsettle}>Un-settle</Item> : null}
+          {canSnooze && onSnooze && snoozePresets.length > 0 ? (
+            <SnoozeSubmenu presets={snoozePresets} onSnooze={onSnooze} />
+          ) : null}
+          {onWake ? <Item onSelect={onWake}>Wake now</Item> : null}
           <Separator />
           <Item
             onSelect={() => void actions.setRead(thread.id, thread.isUnread)}
@@ -124,7 +141,15 @@ export function RowContextMenu({
           </Item>
         </ContextMenu.Content>
       </ContextMenu.Portal>
-    </ContextMenu.Root>
+      </ContextMenu.Root>
+      <IconPicker
+        open={projectPickerOpen}
+        onOpenChange={setProjectPickerOpen}
+        projectId={thread.projectId}
+        projectName={projectName ?? thread.projectId}
+        decor={effectiveDecor}
+      />
+    </>
   );
 }
 
@@ -224,6 +249,39 @@ function ThreadColourSubmenu({
           >
             Clear
           </Item>
+        </ContextMenu.SubContent>
+      </ContextMenu.Portal>
+    </ContextMenu.Sub>
+  );
+}
+
+function SnoozeSubmenu({
+  presets,
+  onSnooze,
+}: {
+  presets: readonly ConfiguredSnoozePreset[];
+  onSnooze: (snoozedUntil: number) => void;
+}) {
+  return (
+    <ContextMenu.Sub>
+      <ContextMenu.SubTrigger className={submenuTriggerClassName}>
+        Snooze
+        <Icon name="ChevronRight" className="ml-auto size-4 opacity-60" />
+      </ContextMenu.SubTrigger>
+      <ContextMenu.Portal>
+        <ContextMenu.SubContent
+          aria-label="Snooze times"
+          sideOffset={4}
+          className="z-50 min-w-40 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+        >
+          {presets.map((preset) => (
+            <Item
+              key={preset.id}
+              onSelect={() => onSnooze(Date.now() + preset.durationMs)}
+            >
+              {preset.label}
+            </Item>
+          ))}
         </ContextMenu.SubContent>
       </ContextMenu.Portal>
     </ContextMenu.Sub>

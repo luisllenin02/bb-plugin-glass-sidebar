@@ -6,6 +6,9 @@ import type {
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { expect, it } from "vitest";
 
+/** Recent enough that Q5's default 6-hour Inactive rule does not apply. */
+const RECENT_ACTIVITY = Date.now() - 60_000;
+
 function thread(id: string, projectId: string): PluginSidebarThread {
   return {
     id,
@@ -33,9 +36,11 @@ function thread(id: string, projectId: string): PluginSidebarThread {
     environment: null,
     host: null,
     createdAt: 1,
-    updatedAt: 1,
+    // Q5: recent activity, so the default 6-hour Inactive rule leaves this
+    // fixture on the Active shelf. Ordering still comes from createdAt.
+    updatedAt: RECENT_ACTIVITY,
     lastReadAt: null,
-    latestAttentionAt: 1,
+    latestAttentionAt: RECENT_ACTIVITY,
   };
 }
 

@@ -1,19 +1,57 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import type Database from "better-sqlite3";
 import { z } from "zod";
+import {
+  DEFAULT_AUTO_SETTLE_AFTER_DAYS,
+  decideAutoSettle,
+  parseAutoSettleAfterDays,
+  type AutoSettlePullRequest,
+  type SettledOverride,
+} from "./src/auto-settle";
+import {
+  LIFECYCLE_CHANNEL,
+  legacyLifecycleColumns,
+} from "./src/lifecycle";
 import {
   INBOX_ORDER_CHANNEL,
   ORGANIZATION_CHANNEL,
   type Folder,
   type Organization,
-  type ProjectDecorMap,
 } from "./src/organization";
+import {
+  PROJECT_ICON_COLOR_NAMES,
+  type ProjectIconColorName,
+} from "./src/accent";
+import {
+  readTopLevelListing,
+  reconcileProjectIcons,
+  type AutoAssignmentProject,
+  type AutoIconSuggestion,
+} from "./src/auto-assign";
+import { searchIcons, type CatalogEntry } from "./src/icon-search";
+import {
+  createProjectDecorStore,
+  type ProjectDecorStore,
+} from "./src/project-decor-store";
 import {
   closeWorkflowActivitySource,
   readWorkflowActivity,
   workflowStorePath,
 } from "./src/workflow-activity";
+import {
+  PROJECT_ICON_CANDIDATES,
+  PROJECT_ICONS_CHANNEL,
+  extractProjectIconHref,
+  iconPathsForHref,
+  normalizeProjectIconPath,
+} from "./src/project-icons";
+import {
+  DEFAULT_SIDEBAR_SETTINGS,
+  SIDEBAR_SETTINGS_CHANNEL,
+  type SidebarSettingsValues,
+} from "./src/sidebar-settings";
 
 const idSchema = z.string().trim().min(1);
 const nameSchema = z.string().trim().min(1).max(80);
@@ -38,10 +76,23 @@ const organizationSchema = z.object({
 });
 const projectDecorSchema = z.object({
   icon: z.string().nullable(),
-  color: z.string().nullable(),
-  source: z.string(),
-  updatedAt: z.number().int(),
-});
+  iconColor: z.enum(PROJECT_ICON_COLOR_NAMES).nullable(),
+  source: z.enum(["manual", "auto"]),
+  autoReason: z.string().nullable(),
+  autoKeywords: z.array(z.string()).max(3),
+}).strict();
+const glyphSchema = z
+  .array(z.tuple([z.string(), z.record(z.string(), z.unknown())]))
+  .readonly();
+const catalogIconSchema = z
+  .object({
+    name: z.string(),
+    export: z.string(),
+    category: z.string(),
+    tags: z.array(z.string()),
+    glyph: glyphSchema,
+  })
+  .strict();
 const okSchema = z.object({ ok: z.literal(true) });
 const emptyInput = z.object({}).strict();
 const orderedThreadIdsSchema = z
@@ -63,6 +114,75 @@ const workflowRunSchema = z
   })
   .strict();
 const siblingStoreSourceStatusSchema = z.enum(["ok", "missing", "error"]);
+const projectIconPathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(1_000)
+  .refine((path) => normalizeProjectIconPath(path) !== null, {
+    message: "Choose a relative SVG, PNG, ICO, JPEG, GIF, AVIF, or WebP path",
+  });
+const uploadFilenameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(255)
+  .refine(
+    (filename) =>
+      !filename.includes("/") &&
+      !filename.includes("\\") &&
+      normalizeProjectIconPath(filename) !== null,
+    { message: "Choose a supported image file" },
+  );
+const iconBase64Schema = z
+  .string()
+  .min(1)
+  .max(1_400_000)
+  .regex(/^[A-Za-z0-9+/]*={0,2}$/, "Invalid image data");
+const sidebarSettingsSchema = z
+  .object({
+    snoozePresets: z.string().trim().min(1).max(500),
+    inactiveThreadsEnabled: z.boolean(),
+    inactiveAfterHours: z.number().int().min(1).max(720),
+    autoSettleInactive: z.boolean(),
+    autoSettleAfterDays: z.number().int().min(1).max(90),
+    autoSettleOnMerge: z.boolean(),
+    autoProjectColours: z.boolean(),
+  })
+  .strict();
+const threadIdInput = z.object({ threadId: idSchema }).strict();
+const bulkThreadIdsSchema = z.array(idSchema).min(1).max(500);
+const bulkMutationOutputSchema = z
+  .object({
+    succeededThreadIds: z.array(z.string()),
+    failures: z.array(
+      z.object({ threadId: z.string(), error: z.string() }).strict(),
+    ),
+  })
+  .strict();
+const lifecycleRowSchema = z
+  .object({
+    threadId: z.string(),
+    settledAt: z.number().nullable(),
+    settledOverride: z.enum(["active", "settled"]).nullable(),
+    snoozedUntil: z.number().nullable(),
+    snoozedAt: z.number().nullable(),
+  })
+  .strict();
+/**
+ * Live-work signals only the client can see. `bb.sdk.threads.list` reports a
+ * session status but not workflow / background-agent / plan / goal counts or a
+ * raised hand, and hiding a thread that is still working is the one failure
+ * this feature cannot afford — so a thread the sidebar reports live is skipped
+ * by the policy pass rather than settled.
+ */
+const activitySignalSchema = z
+  .object({
+    threadId: idSchema,
+    hasPendingInteraction: z.boolean(),
+    isWorking: z.boolean(),
+  })
+  .strict();
 
 export const glassSidebarRpcContract = defineRpcContract({
   getWorkflowActivity: {
@@ -79,7 +199,51 @@ export const glassSidebarRpcContract = defineRpcContract({
   getOrganization: { input: emptyInput, output: organizationSchema },
   getProjectDecor: {
     input: emptyInput,
-    output: z.object({ decor: z.record(z.string(), projectDecorSchema) }),
+    output: z
+      .object({
+        projects: z.record(z.string(), projectDecorSchema),
+        updatedAt: z.number().int().nonnegative(),
+      })
+      .strict(),
+  },
+  getProjectGlyphs: {
+    input: z
+      .object({ projectIds: z.array(idSchema).max(200) })
+      .strict(),
+    output: z.object({ glyphs: z.record(z.string(), glyphSchema) }).strict(),
+  },
+  listIconCatalog: {
+    input: z
+      .object({
+        query: z.string().max(100).optional().default(""),
+        category: z.string().max(100).nullable().optional().default(null),
+      })
+      .strict(),
+    output: z
+      .object({ icons: z.array(catalogIconSchema).max(240), total: z.number().int() })
+      .strict(),
+  },
+  setProjectDecorIcon: {
+    input: z
+      .object({
+        projectId: idSchema,
+        icon: z.string().trim().min(1).max(128),
+        color: z.enum(PROJECT_ICON_COLOR_NAMES).nullable(),
+      })
+      .strict(),
+    output: okSchema,
+  },
+  clearProjectDecorIcon: {
+    input: z.object({ projectId: idSchema }).strict(),
+    output: okSchema,
+  },
+  resetProjectDecorToAuto: {
+    input: z.object({ projectId: idSchema }).strict(),
+    output: okSchema,
+  },
+  redetectAllAutoIcons: {
+    input: emptyInput,
+    output: okSchema,
   },
   createFolder: {
     input: z.object({
@@ -160,6 +324,108 @@ export const glassSidebarRpcContract = defineRpcContract({
     input: z.object({ inboxThreadIds: orderedThreadIdsSchema }).strict(),
     output: z.object({ inboxThreadIds: z.array(z.string()) }).strict(),
   },
+  getSidebarSettings: {
+    input: emptyInput,
+    output: sidebarSettingsSchema,
+  },
+  updateSidebarSettings: {
+    input: sidebarSettingsSchema,
+    output: sidebarSettingsSchema,
+  },
+  listProjectIconSettings: {
+    input: emptyInput,
+    output: z
+      .object({
+        projects: z.array(
+          z
+            .object({
+              id: z.string(),
+              name: z.string(),
+              customPath: z.string().nullable(),
+              customUploadName: z.string().nullable(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+  },
+  searchProjectIconFiles: {
+    input: z
+      .object({ projectId: idSchema, query: z.string().trim().max(200) })
+      .strict(),
+    output: z.object({ paths: z.array(z.string()) }).strict(),
+  },
+  setProjectIcon: {
+    input: z
+      .object({ projectId: idSchema, path: projectIconPathSchema.nullable() })
+      .strict(),
+    output: z
+      .object({
+        customPath: z.string().nullable(),
+        customUploadName: z.string().nullable(),
+      })
+      .strict(),
+  },
+  uploadProjectIcon: {
+    input: z
+      .object({
+        projectId: idSchema,
+        filename: uploadFilenameSchema,
+        mimeType: z.string().max(100),
+        contentBase64: iconBase64Schema,
+      })
+      .strict(),
+    output: z
+      .object({
+        customPath: z.string().nullable(),
+        customUploadName: z.string().nullable(),
+      })
+      .strict(),
+  },
+  listLifecycle: {
+    // Q5's single mount RPC. The handler runs the idempotent auto-settle pass
+    // before it answers, so there is no separate mount-time evaluation call.
+    input: z
+      .object({
+        signals: z.array(activitySignalSchema).max(10_000).optional().default([]),
+      })
+      .strict(),
+    output: z.object({ rows: z.array(lifecycleRowSchema) }).strict(),
+  },
+  settle: { input: threadIdInput, output: z.object({ ok: z.boolean() }) },
+  unsettle: { input: threadIdInput, output: z.object({ ok: z.boolean() }) },
+  snooze: {
+    input: z
+      .object({
+        threadId: idSchema,
+        // Absolute wake time, so a snooze means the same thing on every device.
+        snoozedUntil: z.number().int().positive(),
+      })
+      .strict(),
+    output: z.object({ ok: z.boolean() }),
+  },
+  unsnooze: { input: threadIdInput, output: z.object({ ok: z.boolean() }) },
+  acknowledgeWake: {
+    input: threadIdInput,
+    output: z.object({ ok: z.boolean() }),
+  },
+  bulkSettle: {
+    input: z.object({ threadIds: bulkThreadIdsSchema }).strict(),
+    output: bulkMutationOutputSchema,
+  },
+  bulkSnooze: {
+    input: z
+      .object({
+        threadIds: bulkThreadIdsSchema,
+        snoozedUntil: z.number().int().positive(),
+      })
+      .strict(),
+    output: bulkMutationOutputSchema,
+  },
+  evaluateAutoSettle: {
+    input: emptyInput,
+    output: z.object({ changedThreadIds: z.array(z.string()) }).strict(),
+  },
 });
 
 const migrations = [
@@ -192,7 +458,176 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS inbox_order (
      thread_id TEXT PRIMARY KEY, sort_index INTEGER NOT NULL
    )`,
+  `CREATE TABLE IF NOT EXISTS project_icons (
+     project_id TEXT PRIMARY KEY, path TEXT NOT NULL, updated_at INTEGER NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS project_icon_uploads (
+     project_id TEXT PRIMARY KEY, filename TEXT NOT NULL,
+     mime_type TEXT NOT NULL, content_base64 TEXT NOT NULL,
+     size_bytes INTEGER NOT NULL, updated_at INTEGER NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS sidebar_settings (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     snooze_presets TEXT NOT NULL,
+     inactive_threads_enabled INTEGER NOT NULL,
+     inactive_after_hours INTEGER NOT NULL,
+     auto_settle_inactive INTEGER NOT NULL,
+     auto_settle_after_days INTEGER NOT NULL,
+     auto_settle_on_merge INTEGER NOT NULL,
+     auto_project_colours INTEGER NOT NULL
+   )`,
+  // Q5 schema reconciliation. Q0's `state`, `wake_at` and `updated_at` columns
+  // are kept exactly as they are — no drop, no recreate, no constraint change
+  // — and every lifecycle write supplies them from `legacyLifecycleColumns`,
+  // so the NOT NULL constraints are always satisfied. These four columns carry
+  // the fork's real shape and are all nullable, which is what makes
+  // `ALTER TABLE … ADD COLUMN` legal here.
+  `ALTER TABLE thread_lifecycle ADD COLUMN settled_at INTEGER`,
+  `ALTER TABLE thread_lifecycle ADD COLUMN settled_override TEXT
+     CHECK (settled_override IN ('active','settled') OR settled_override IS NULL)`,
+  `ALTER TABLE thread_lifecycle ADD COLUMN snoozed_until INTEGER`,
+  `ALTER TABLE thread_lifecycle ADD COLUMN snoozed_at INTEGER`,
 ];
+
+/** The fork's five fields: what every reader and Q7's import work with. */
+export interface StoredLifecycleRow {
+  threadId: string;
+  settledAt: number | null;
+  settledOverride: SettledOverride | null;
+  snoozedUntil: number | null;
+  snoozedAt: number | null;
+}
+
+interface LifecycleDbRow {
+  thread_id: string;
+  settled_at: number | null;
+  settled_override: SettledOverride | null;
+  snoozed_until: number | null;
+  snoozed_at: number | null;
+}
+
+interface AutoSettleSettingsRow {
+  auto_settle_inactive: number;
+  auto_settle_after_days: number;
+  auto_settle_on_merge: number;
+}
+
+// Channel every client re-reads `listLifecycle` on. Declared in the pure
+// module so the frontend hook can subscribe without importing this file.
+export { LIFECYCLE_CHANNEL };
+
+/**
+ * Bounded fan-out for a bulk mutation, reporting per-thread outcomes in input
+ * order. Server-local on purpose: Q6 owns the frontend `src/bulk-actions.ts`
+ * runner, and the two lifecycle bulk RPCs must not depend on that packet to
+ * compile.
+ */
+async function runBulkThreadAction(
+  threadIds: readonly string[],
+  action: (threadId: string) => Promise<void>,
+  concurrency = 4,
+): Promise<{
+  succeededThreadIds: string[];
+  failures: Array<{ threadId: string; error: string }>;
+}> {
+  const results = new Map<string, string | null>();
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, threadIds.length));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < threadIds.length) {
+        const threadId = threadIds[nextIndex++]!;
+        try {
+          await action(threadId);
+          results.set(threadId, null);
+        } catch (error) {
+          const message =
+            error instanceof Error && error.message.trim().length > 0
+              ? error.message.trim()
+              : "Unknown error";
+          results.set(threadId, message);
+        }
+      }
+    }),
+  );
+  return {
+    succeededThreadIds: threadIds.filter(
+      (threadId) => results.get(threadId) === null,
+    ),
+    failures: threadIds.flatMap((threadId) => {
+      const error = results.get(threadId);
+      return error ? [{ threadId, error }] : [];
+    }),
+  };
+}
+
+/** Q6 owns `sidebar_settings`; until it lands the policy runs on these. */
+const DEFAULT_AUTO_SETTLE_SETTINGS = Object.freeze({
+  autoSettleInactive: true,
+  autoSettleAfterDays: DEFAULT_AUTO_SETTLE_AFTER_DAYS,
+  autoSettleOnMerge: true,
+});
+
+interface StoredProjectIconRow {
+  project_id: string;
+  path: string;
+  updated_at: number;
+}
+
+interface StoredProjectIconUploadRow {
+  project_id: string;
+  filename: string;
+  mime_type: string;
+  content_base64: string;
+  size_bytes: number;
+  updated_at: number;
+}
+
+interface ResolvedProjectIcon {
+  content: string;
+  contentEncoding: "base64" | "utf8";
+  mimeType: string;
+  path: string;
+  sizeBytes: number;
+}
+
+interface SidebarSettingsDbRow {
+  snooze_presets: string;
+  inactive_threads_enabled: number;
+  inactive_after_hours: number;
+  auto_settle_inactive: number;
+  auto_settle_after_days: number;
+  auto_settle_on_merge: number;
+  auto_project_colours: number;
+}
+
+const PROJECT_ICON_SOURCE_FILES = [
+  "index.html",
+  "public/index.html",
+  "app/routes/__root.tsx",
+  "src/routes/__root.tsx",
+  "app/root.tsx",
+  "src/root.tsx",
+  "src/index.html",
+] as const;
+const PROJECT_ICON_MAX_BYTES = 1_000_000;
+const PROJECT_ICON_CACHE_MS = 5 * 60_000;
+// A project with no icon on disk is the steady state. Holding the miss avoids
+// repeating dozens of SDK file reads on bb's main server thread. Explicit icon
+// changes invalidate immediately, so a long miss TTL does not delay overrides.
+export const PROJECT_ICON_MISS_CACHE_MS = 6 * 60 * 60_000;
+
+function iconMimeType(path: string, reported: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".svg")) return "image/svg+xml";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".ico")) return "image/x-icon";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".avif")) return "image/avif";
+  if (lower.endsWith(".webp")) return "image/webp";
+  return reported;
+}
 
 interface StoredFolderRow {
   id: string;
@@ -215,12 +650,35 @@ interface StoredAccentRow {
   custom_color: string | null;
 }
 
-interface StoredProjectDecorRow {
-  project_id: string;
-  icon: string | null;
-  color: string | null;
-  source: string;
-  updated_at: number;
+type ProjectGlyph = ReadonlyArray<[string, Record<string, unknown>]>;
+
+interface IconAssets {
+  catalog: CatalogEntry[];
+  glyphs: Record<string, ProjectGlyph>;
+}
+
+let iconAssetsPromise: Promise<IconAssets> | null = null;
+
+async function readAssetText(name: string): Promise<string> {
+  try {
+    return await readFile(new URL(`../assets/${name}`, import.meta.url), "utf8");
+  } catch (error) {
+    // Source-mode tests execute server.ts from the repository root; production
+    // executes dist/server.js, where the required ../assets path is correct.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return readFile(new URL(`./assets/${name}`, import.meta.url), "utf8");
+  }
+}
+
+function loadIconAssets(): Promise<IconAssets> {
+  iconAssetsPromise ??= Promise.all([
+    readAssetText("icon-catalog.json"),
+    readAssetText("icon-catalog-glyphs.json"),
+  ]).then(([catalogJson, glyphJson]) => ({
+    catalog: JSON.parse(catalogJson) as CatalogEntry[],
+    glyphs: JSON.parse(glyphJson) as Record<string, ProjectGlyph>,
+  }));
+  return iconAssetsPromise;
 }
 
 function newFolderId(): string {
@@ -263,10 +721,254 @@ export default async function plugin(bb: BbPluginApi) {
       fileMustExist: true,
     });
   bb.storage.migrate(db, migrations);
+  const projectDecorStore = createProjectDecorStore(db);
+  const projectSuggestions = new Map<string, AutoIconSuggestion>();
   bb.onDispose(() => closeWorkflowActivitySource(workflowSourcePath));
 
   const publishOrganization = (reason: string) => {
     bb.realtime.publish(ORGANIZATION_CHANNEL, { reason });
+  };
+  const publishProjectDecor = (reason: string) => {
+    bb.realtime.publish("project-decor", { reason });
+  };
+
+  const projectIconCache = new Map<
+    string,
+    { expiresAt: number; icon: ResolvedProjectIcon | null }
+  >();
+  const pendingProjectIconResolutions = new Map<
+    string,
+    Promise<ResolvedProjectIcon | null>
+  >();
+  const defaultProjectHostIds = new Map<string, Promise<string | null>>();
+  const readProjectIconOverride = (projectId: string): string | null =>
+    (
+      db
+        .prepare(
+          `SELECT project_id, path, updated_at FROM project_icons
+           WHERE project_id = ?`,
+        )
+        .get(projectId) as StoredProjectIconRow | undefined
+    )?.path ?? null;
+  const readProjectIconUpload = (
+    projectId: string,
+  ): StoredProjectIconUploadRow | null =>
+    (db
+      .prepare(
+        `SELECT project_id, filename, mime_type, content_base64,
+                size_bytes, updated_at FROM project_icon_uploads
+         WHERE project_id = ?`,
+      )
+      .get(projectId) as StoredProjectIconUploadRow | undefined) ?? null;
+  const clearProjectIconCache = (projectId: string): void => {
+    for (const key of projectIconCache.keys()) {
+      if (key.startsWith(`${projectId}\0`)) projectIconCache.delete(key);
+    }
+  };
+
+  const defaultProjectHostId = async (
+    projectId: string,
+  ): Promise<string | null> => {
+    let pending = defaultProjectHostIds.get(projectId);
+    if (!pending) {
+      pending = bb.sdk.projects.get({ projectId }).then(
+        (project) =>
+          project.sources.find((source) => source.isDefault)?.hostId ??
+          project.sources[0]?.hostId ??
+          null,
+      );
+      defaultProjectHostIds.set(projectId, pending);
+      void pending.catch(() => defaultProjectHostIds.delete(projectId));
+    }
+    return pending;
+  };
+
+  const readProjectFile = async (
+    projectId: string,
+    environmentId: string | null,
+    path: string,
+  ) => {
+    if (environmentId) {
+      return bb.sdk.projects.fileContent({ projectId, environmentId, path });
+    }
+    const hostId = await defaultProjectHostId(projectId);
+    return hostId
+      ? bb.sdk.projects.fileContent({ projectId, hostId, path })
+      : bb.sdk.projects.fileContent({ projectId, path });
+  };
+
+  const tryProjectIcon = async (
+    projectId: string,
+    environmentId: string | null,
+    path: string,
+  ): Promise<ResolvedProjectIcon | null> => {
+    const normalized = normalizeProjectIconPath(path);
+    if (!normalized) return null;
+    try {
+      const file = await readProjectFile(projectId, environmentId, normalized);
+      if (file.sizeBytes > PROJECT_ICON_MAX_BYTES) return null;
+      return {
+        ...file,
+        mimeType: iconMimeType(normalized, file.mimeType),
+        path: normalized,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const resolveProjectIconUncached = async (
+    projectId: string,
+    environmentId: string | null,
+  ): Promise<ResolvedProjectIcon | null> => {
+    const cacheKey = `${projectId}\0${environmentId ?? ""}`;
+    const upload = readProjectIconUpload(projectId);
+    if (upload) {
+      const icon = {
+        content: upload.content_base64,
+        contentEncoding: "base64" as const,
+        mimeType: upload.mime_type,
+        path: upload.filename,
+        sizeBytes: upload.size_bytes,
+      };
+      projectIconCache.set(cacheKey, {
+        expiresAt: Date.now() + PROJECT_ICON_CACHE_MS,
+        icon,
+      });
+      return icon;
+    }
+
+    const candidates: string[] = [];
+    const customPath = readProjectIconOverride(projectId);
+    if (customPath) candidates.push(customPath);
+    try {
+      const projectFile = await readProjectFile(
+        projectId,
+        environmentId,
+        "t3.json",
+      );
+      if (
+        projectFile.contentEncoding === "utf8" &&
+        projectFile.sizeBytes <= 100_000
+      ) {
+        const parsed = JSON.parse(projectFile.content) as { iconPath?: unknown };
+        if (typeof parsed.iconPath === "string") candidates.push(parsed.iconPath);
+      }
+    } catch {
+      // t3.json is optional.
+    }
+    candidates.push(...PROJECT_ICON_CANDIDATES);
+
+    let icon: ResolvedProjectIcon | null = null;
+    for (const candidate of new Set(candidates)) {
+      icon = await tryProjectIcon(projectId, environmentId, candidate);
+      if (icon) break;
+    }
+    if (!icon) {
+      for (const sourcePath of PROJECT_ICON_SOURCE_FILES) {
+        try {
+          const source = await readProjectFile(
+            projectId,
+            environmentId,
+            sourcePath,
+          );
+          if (
+            source.contentEncoding !== "utf8" ||
+            source.sizeBytes > PROJECT_ICON_MAX_BYTES
+          ) {
+            continue;
+          }
+          const href = extractProjectIconHref(source.content);
+          if (!href) continue;
+          for (const path of iconPathsForHref(href)) {
+            icon = await tryProjectIcon(projectId, environmentId, path);
+            if (icon) break;
+          }
+          if (icon) break;
+        } catch {
+          // Each source file is optional.
+        }
+      }
+    }
+
+    projectIconCache.set(cacheKey, {
+      expiresAt:
+        Date.now() + (icon ? PROJECT_ICON_CACHE_MS : PROJECT_ICON_MISS_CACHE_MS),
+      icon,
+    });
+    return icon;
+  };
+
+  const resolveProjectIcon = (
+    projectId: string,
+    environmentId: string | null,
+  ): Promise<ResolvedProjectIcon | null> => {
+    const cacheKey = `${projectId}\0${environmentId ?? ""}`;
+    const cached = projectIconCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return Promise.resolve(cached.icon);
+    }
+    const pending = pendingProjectIconResolutions.get(cacheKey);
+    if (pending) return pending;
+    const resolution = resolveProjectIconUncached(
+      projectId,
+      environmentId,
+    ).finally(() => pendingProjectIconResolutions.delete(cacheKey));
+    pendingProjectIconResolutions.set(cacheKey, resolution);
+    return resolution;
+  };
+
+  bb.http.route("GET", "/project-icon", async (context) => {
+    const projectId = context.req.query("projectId")?.trim();
+    const environmentId = context.req.query("environmentId")?.trim() || null;
+    if (!projectId) return context.text("Missing projectId", 400);
+    const icon = await resolveProjectIcon(projectId, environmentId);
+    if (!icon) return context.body(null, 404, { "cache-control": "no-store" });
+    const body =
+      icon.contentEncoding === "base64"
+        ? Uint8Array.from(Buffer.from(icon.content, "base64")).buffer
+        : icon.content;
+    return new Response(body, {
+      headers: {
+        "cache-control": "private, max-age=0, must-revalidate",
+        "content-security-policy":
+          "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        "content-type": icon.mimeType,
+        "x-content-type-options": "nosniff",
+      },
+    });
+  });
+
+  const listProjects = async (): Promise<AutoAssignmentProject[]> => {
+    try {
+      const projects = await bb.sdk.projects.list({ includePersonal: true });
+      return projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        path:
+          project.sources.find((source) => source.isDefault)?.path ??
+          project.sources[0]?.path ??
+          "",
+      }));
+    } catch {
+      return [];
+    }
+  };
+
+  const reconcileProjects = async (
+    reason: string,
+    selectedProjects?: readonly AutoAssignmentProject[],
+  ) => {
+    const result = await reconcileProjectIcons({
+      projects: selectedProjects ?? (await listProjects()),
+      store: projectDecorStore,
+      listingFor: (project) => readTopLevelListing(project.path),
+      publish: () => publishProjectDecor(reason),
+    });
+    for (const [projectId, suggestion] of Object.entries(result.suggestions)) {
+      projectSuggestions.set(projectId, suggestion);
+    }
+    return result;
   };
 
   const listMemberIds = (folderId: string): string[] =>
@@ -370,22 +1072,351 @@ export default async function plugin(bb: BbPluginApi) {
     inboxThreadIds.forEach((threadId, index) => insert.run(threadId, index));
   });
 
-  const readProjectDecor = (): ProjectDecorMap => {
-    const rows = db
-      .prepare(`SELECT project_id, icon, color, source, updated_at FROM project_decor`)
-      .all() as StoredProjectDecorRow[];
-    return Object.fromEntries(
-      rows.map((row) => [
-        row.project_id,
-        {
-          icon: row.icon,
-          color: row.color,
-          source: row.source,
-          updatedAt: row.updated_at,
-        },
-      ]),
+  const projectDecorView = () => {
+    const rows = projectDecorStore.list();
+    return {
+      projects: Object.fromEntries(
+        rows.map((row) => {
+          const suggestion =
+            row.source === "auto" ? projectSuggestions.get(row.projectId) : null;
+          return [
+            row.projectId,
+            {
+              icon: row.icon,
+              iconColor: row.color,
+              source: row.source,
+              autoReason: suggestion?.reason ?? null,
+              autoKeywords: suggestion?.keywords ?? [],
+            },
+          ];
+        }),
+      ),
+      updatedAt: rows.reduce((latest, row) => Math.max(latest, row.updatedAt), 0),
+    };
+  };
+
+  let firstProjectDecorRead = true;
+
+  const lifecycleColumns = `thread_id, settled_at, settled_override,
+                            snoozed_until, snoozed_at`;
+  const toLifecycleRow = (row: LifecycleDbRow): StoredLifecycleRow => ({
+    threadId: row.thread_id,
+    settledAt: row.settled_at,
+    settledOverride: row.settled_override,
+    snoozedUntil: row.snoozed_until,
+    snoozedAt: row.snoozed_at,
+  });
+
+  const readAllLifecycle = (): StoredLifecycleRow[] =>
+    (
+      db
+        .prepare(`SELECT ${lifecycleColumns} FROM thread_lifecycle`)
+        .all() as LifecycleDbRow[]
+    ).map(toLifecycleRow);
+
+  const readLifecycle = (threadId: string): StoredLifecycleRow | null => {
+    const row = db
+      .prepare(
+        `SELECT ${lifecycleColumns} FROM thread_lifecycle WHERE thread_id = ?`,
+      )
+      .get(threadId) as LifecycleDbRow | undefined;
+    return row ? toLifecycleRow(row) : null;
+  };
+
+  /**
+   * Eight-column upsert: the fork's five fields plus the three scaffold
+   * columns, derived on every write so Q0's NOT NULL constraints hold and
+   * nothing ever reads the mirrors back as truth.
+   */
+  const writeLifecycle = (row: StoredLifecycleRow, publish = true): void => {
+    const legacy = legacyLifecycleColumns(row, Date.now());
+    db.prepare(
+      `INSERT INTO thread_lifecycle
+         (thread_id, settled_at, settled_override, snoozed_until, snoozed_at,
+          state, wake_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET
+         settled_at = excluded.settled_at,
+         settled_override = excluded.settled_override,
+         snoozed_until = excluded.snoozed_until,
+         snoozed_at = excluded.snoozed_at,
+         state = excluded.state,
+         wake_at = excluded.wake_at,
+         updated_at = excluded.updated_at`,
+    ).run(
+      row.threadId,
+      row.settledAt,
+      row.settledOverride,
+      row.snoozedUntil,
+      row.snoozedAt,
+      legacy.state,
+      legacy.wakeAt,
+      legacy.updatedAt,
+    );
+    if (publish) {
+      bb.realtime.publish(LIFECYCLE_CHANNEL, { threadId: row.threadId });
+    }
+  };
+
+  const writeManyLifecycle = db.transaction(
+    (rows: readonly StoredLifecycleRow[]) => {
+      for (const row of rows) writeLifecycle(row, false);
+    },
+  );
+
+  const publishLifecycleChanges = (threadIds: readonly string[]): void => {
+    if (threadIds.length === 0) return;
+    bb.realtime.publish(LIFECYCLE_CHANNEL, { threadIds });
+  };
+
+  const deleteLifecycle = db.prepare(
+    `DELETE FROM thread_lifecycle WHERE thread_id = ?`,
+  );
+
+  const clearLifecycle = (threadId: string): void => {
+    deleteLifecycle.run(threadId);
+    bb.realtime.publish(LIFECYCLE_CHANNEL, { threadId });
+  };
+
+  /** Real work clears both kinds of manual settle override. */
+  const clearSettlingState = (threadId: string): boolean => {
+    const row = readLifecycle(threadId);
+    if (
+      row === null ||
+      (row.settledAt === null && row.settledOverride === null)
+    ) {
+      return false;
+    }
+    if (row.snoozedUntil === null) {
+      deleteLifecycle.run(threadId);
+    } else {
+      writeLifecycle({ ...row, settledAt: null, settledOverride: null }, false);
+    }
+    bb.realtime.publish(LIFECYCLE_CHANNEL, { threadId });
+    return true;
+  };
+
+  const readSidebarSettings = (): SidebarSettingsValues => {
+    const row = db
+      .prepare(
+        `SELECT snooze_presets, inactive_threads_enabled,
+                inactive_after_hours, auto_settle_inactive,
+                auto_settle_after_days, auto_settle_on_merge,
+                auto_project_colours
+         FROM sidebar_settings WHERE id = 1`,
+      )
+      .get() as SidebarSettingsDbRow | undefined;
+    return row
+      ? {
+          snoozePresets: row.snooze_presets,
+          inactiveThreadsEnabled: row.inactive_threads_enabled === 1,
+          inactiveAfterHours: row.inactive_after_hours,
+          autoSettleInactive: row.auto_settle_inactive === 1,
+          autoSettleAfterDays: row.auto_settle_after_days,
+          autoSettleOnMerge: row.auto_settle_on_merge === 1,
+          autoProjectColours: row.auto_project_colours === 1,
+        }
+      : { ...DEFAULT_SIDEBAR_SETTINGS };
+  };
+
+  const writeSidebarSettings = (values: SidebarSettingsValues): void => {
+    db.prepare(
+      `INSERT INTO sidebar_settings (
+         id, snooze_presets, inactive_threads_enabled,
+         inactive_after_hours, auto_settle_inactive,
+         auto_settle_after_days, auto_settle_on_merge,
+         auto_project_colours
+       ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         snooze_presets = excluded.snooze_presets,
+         inactive_threads_enabled = excluded.inactive_threads_enabled,
+         inactive_after_hours = excluded.inactive_after_hours,
+         auto_settle_inactive = excluded.auto_settle_inactive,
+         auto_settle_after_days = excluded.auto_settle_after_days,
+         auto_settle_on_merge = excluded.auto_settle_on_merge,
+         auto_project_colours = excluded.auto_project_colours`,
+    ).run(
+      values.snoozePresets,
+      values.inactiveThreadsEnabled ? 1 : 0,
+      values.inactiveAfterHours,
+      values.autoSettleInactive ? 1 : 0,
+      values.autoSettleAfterDays,
+      values.autoSettleOnMerge ? 1 : 0,
+      values.autoProjectColours ? 1 : 0,
     );
   };
+
+  const readAutoSettleSettings = () => {
+    try {
+      const row = db
+        .prepare(
+          `SELECT auto_settle_inactive, auto_settle_after_days,
+                  auto_settle_on_merge
+             FROM sidebar_settings WHERE id = 1`,
+        )
+        .get() as AutoSettleSettingsRow | undefined;
+      if (!row) return DEFAULT_AUTO_SETTLE_SETTINGS;
+      return {
+        autoSettleInactive: row.auto_settle_inactive === 1,
+        autoSettleAfterDays: row.auto_settle_after_days,
+        autoSettleOnMerge: row.auto_settle_on_merge === 1,
+      };
+    } catch {
+      // Q6 has not created `sidebar_settings` yet.
+      return DEFAULT_AUTO_SETTLE_SETTINGS;
+    }
+  };
+
+  const loadPolicyThreads = async () => {
+    const threads: Awaited<ReturnType<typeof bb.sdk.threads.list>> = [];
+    const pageSize = 500;
+    for (let offset = 0; ; offset += pageSize) {
+      const page = await bb.sdk.threads.list({
+        archived: false,
+        includeHidden: false,
+        limit: pageSize,
+        offset,
+      });
+      threads.push(...page);
+      if (page.length < pageSize) break;
+    }
+    return threads;
+  };
+
+  const loadPullRequests = async (environmentIds: readonly string[]) => {
+    const results = new Map<string, AutoSettlePullRequest>();
+    let nextIndex = 0;
+    const workers = Array.from(
+      { length: Math.min(4, environmentIds.length) },
+      async () => {
+        while (nextIndex < environmentIds.length) {
+          const environmentId = environmentIds[nextIndex++]!;
+          try {
+            const result = await bb.sdk.environments.pullRequest({
+              environmentId,
+            });
+            if (result.outcome === "available") {
+              results.set(environmentId, {
+                outcome: "available",
+                state: result.pullRequest.state,
+                updatedAt: result.pullRequest.updatedAt,
+              });
+            } else if (result.outcome === "absent") {
+              results.set(environmentId, { outcome: "absent" });
+            } else {
+              results.set(environmentId, { outcome: "unknown" });
+            }
+          } catch {
+            results.set(environmentId, { outcome: "unknown" });
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+    return results;
+  };
+
+  const applyPolicyChanges = db.transaction(
+    (
+      changes: ReadonlyArray<{
+        decision: "settle" | "unsettle";
+        row: StoredLifecycleRow | null;
+        threadId: string;
+      }>,
+      now: number,
+    ) => {
+      for (const { decision, row, threadId } of changes) {
+        if (decision === "settle") {
+          writeLifecycle(
+            {
+              threadId,
+              settledAt: now,
+              settledOverride: null,
+              snoozedUntil: row?.snoozedUntil ?? null,
+              snoozedAt: row?.snoozedAt ?? null,
+            },
+            false,
+          );
+        } else if (row?.snoozedUntil != null) {
+          writeLifecycle(
+            { ...row, settledAt: null, settledOverride: null },
+            false,
+          );
+        } else {
+          deleteLifecycle.run(threadId);
+        }
+      }
+    },
+  );
+
+  let policyEvaluation: Promise<string[]> | null = null;
+  /**
+   * Idempotent: it publishes at most once, and only when it changed state, so
+   * a refresh triggered by its own signal cannot loop. Concurrent callers
+   * coalesce onto one pass, which is what keeps a freshly opened client from
+   * repeating the thread and PR work.
+   */
+  const evaluatePolicies = (
+    liveThreadIds: ReadonlySet<string> = new Set(),
+  ): Promise<string[]> => {
+    if (policyEvaluation !== null) return policyEvaluation;
+    policyEvaluation = (async () => {
+      const configured = readAutoSettleSettings();
+      const threads = await loadPolicyThreads();
+      const environmentIds = [
+        ...new Set(
+          threads.flatMap((thread) =>
+            thread.environmentId === null ? [] : [thread.environmentId],
+          ),
+        ),
+      ];
+      const pullRequests = await loadPullRequests(environmentIds);
+      const lifecycleByThreadId = new Map(
+        readAllLifecycle().map((row) => [row.threadId, row]),
+      );
+      const now = Date.now();
+      const policySettings = {
+        afterDays: parseAutoSettleAfterDays(
+          configured.autoSettleInactive,
+          String(configured.autoSettleAfterDays),
+        ),
+        onMerge: configured.autoSettleOnMerge,
+      };
+      const changes = threads.flatMap((thread) => {
+        if (liveThreadIds.has(thread.id)) return [];
+        const row = lifecycleByThreadId.get(thread.id) ?? null;
+        const decision = decideAutoSettle({
+          lifecycle: row,
+          now,
+          pullRequest:
+            thread.environmentId === null
+              ? { outcome: "absent" }
+              : (pullRequests.get(thread.environmentId) ?? {
+                  outcome: "unknown",
+                }),
+          settings: policySettings,
+          thread,
+        });
+        return decision === "keep"
+          ? []
+          : [{ decision, row, threadId: thread.id }];
+      });
+      if (changes.length === 0) return [];
+      applyPolicyChanges(changes, now);
+      const changedThreadIds = changes.map((change) => change.threadId);
+      bb.realtime.publish(LIFECYCLE_CHANNEL, { threadIds: changedThreadIds });
+      return changedThreadIds;
+    })().finally(() => {
+      policyEvaluation = null;
+    });
+    return policyEvaluation;
+  };
+
+  // The one preserved scheduler. No server timer, no watcher: the sweep claims
+  // this durable row only while the plugin is loaded.
+  bb.background.schedule("auto-settle", "*/5 * * * *", async () => {
+    await evaluatePolicies();
+  });
 
   bb.rpc.register(glassSidebarRpcContract, {
     getWorkflowActivity: () =>
@@ -396,7 +1427,71 @@ export default async function plugin(bb: BbPluginApi) {
         (message) => bb.log.warn(message),
       ),
     getOrganization: () => readOrganization(),
-    getProjectDecor: () => ({ decor: readProjectDecor() }),
+    getProjectDecor: async () => {
+      if (firstProjectDecorRead) {
+        firstProjectDecorRead = false;
+        await reconcileProjects("getProjectDecor");
+      }
+      return projectDecorView();
+    },
+    getProjectGlyphs: async ({ projectIds }) => {
+      const { glyphs } = await loadIconAssets();
+      const iconNames = new Set(
+        projectIds
+          .map((projectId) => projectDecorStore.get(projectId)?.icon)
+          .filter((icon): icon is string => Boolean(icon)),
+      );
+      return {
+        glyphs: Object.fromEntries(
+          [...iconNames].flatMap((icon) =>
+            glyphs[icon] ? [[icon, glyphs[icon]]] : [],
+          ),
+        ),
+      };
+    },
+    listIconCatalog: async ({ query, category }) => {
+      const assets = await loadIconAssets();
+      const found = searchIcons(assets.catalog, query, category);
+      return {
+        icons: found.results.flatMap((entry) =>
+          assets.glyphs[entry.name]
+            ? [{ ...entry, tags: [...entry.tags], glyph: assets.glyphs[entry.name] }]
+            : [],
+        ),
+        total: found.total,
+      };
+    },
+    setProjectDecorIcon: ({ projectId, icon, color }) => {
+      projectDecorStore.set({ projectId, icon, color });
+      projectSuggestions.delete(projectId);
+      publishProjectDecor("setProjectDecorIcon");
+      return { ok: true as const };
+    },
+    clearProjectDecorIcon: ({ projectId }) => {
+      projectDecorStore.clear(projectId);
+      projectSuggestions.delete(projectId);
+      publishProjectDecor("clearProjectDecorIcon");
+      return { ok: true as const };
+    },
+    resetProjectDecorToAuto: async ({ projectId }) => {
+      const cleared = projectDecorStore.clearManual(projectId);
+      const projects = (await listProjects()).filter(
+        (project) => project.id === projectId,
+      );
+      const reconciled = await reconcileProjects(
+        "resetProjectDecorToAuto",
+        projects,
+      );
+      if (cleared && !reconciled.changed) {
+        publishProjectDecor("resetProjectDecorToAuto");
+      }
+      return { ok: true as const };
+    },
+    redetectAllAutoIcons: async () => {
+      const reconciled = await reconcileProjects("redetectAllAutoIcons");
+      if (!reconciled.changed) publishProjectDecor("redetectAllAutoIcons");
+      return { ok: true as const };
+    },
     createFolder: ({ name, threadIds, colorIndex, customColor }) => {
       const id = newFolderId();
       const uniqueThreadIds = [...new Set(threadIds)];
@@ -572,6 +1667,234 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish(INBOX_ORDER_CHANNEL, {});
       return { inboxThreadIds: readInboxOrder() };
     },
+    getSidebarSettings: () => readSidebarSettings(),
+    updateSidebarSettings: (values) => {
+      writeSidebarSettings(values);
+      bb.realtime.publish(SIDEBAR_SETTINGS_CHANNEL, {});
+      return readSidebarSettings();
+    },
+    listProjectIconSettings: async () => {
+      const projects = await bb.sdk.projects.list();
+      return {
+        projects: projects
+          .filter((project) => project.kind === "standard")
+          .map((project) => ({
+            id: project.id,
+            name: project.name,
+            customPath: readProjectIconOverride(project.id),
+            customUploadName: readProjectIconUpload(project.id)?.filename ?? null,
+          })),
+      };
+    },
+    searchProjectIconFiles: async ({ projectId, query }) => {
+      const hostId = await defaultProjectHostId(projectId);
+      const request = {
+        projectId,
+        includeFiles: "true" as const,
+        includeDirectories: "false" as const,
+        limit: "100",
+        query,
+      };
+      const result = hostId
+        ? await bb.sdk.projects.paths({ ...request, hostId })
+        : await bb.sdk.projects.paths(request);
+      return {
+        paths: [
+          ...new Set(
+            result.paths.flatMap((entry) => {
+              if (entry.kind !== "file") return [];
+              const path = normalizeProjectIconPath(entry.path);
+              return path ? [path] : [];
+            }),
+          ),
+        ].slice(0, 30),
+      };
+    },
+    setProjectIcon: async ({ projectId, path }) => {
+      await bb.sdk.projects.get({ projectId });
+      const normalized = path === null ? null : normalizeProjectIconPath(path);
+      if (path !== null && normalized === null) {
+        throw new Error("Choose a relative image path inside the project");
+      }
+      db.transaction(() => {
+        if (normalized === null) {
+          db.prepare(`DELETE FROM project_icons WHERE project_id = ?`).run(
+            projectId,
+          );
+        } else {
+          db.prepare(
+            `INSERT INTO project_icons (project_id, path, updated_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(project_id) DO UPDATE SET
+               path = excluded.path, updated_at = excluded.updated_at`,
+          ).run(projectId, normalized, Date.now());
+        }
+        db.prepare(`DELETE FROM project_icon_uploads WHERE project_id = ?`).run(
+          projectId,
+        );
+      })();
+      clearProjectIconCache(projectId);
+      bb.realtime.publish(PROJECT_ICONS_CHANNEL, { projectId });
+      return { customPath: normalized, customUploadName: null };
+    },
+    uploadProjectIcon: async ({
+      projectId,
+      filename,
+      mimeType,
+      contentBase64,
+    }) => {
+      await bb.sdk.projects.get({ projectId });
+      const bytes = Buffer.from(contentBase64, "base64");
+      if (bytes.byteLength === 0 || bytes.byteLength > PROJECT_ICON_MAX_BYTES) {
+        throw new Error("Choose an image smaller than 1 MB");
+      }
+      const normalizedFilename = filename.trim();
+      const canonicalBase64 = bytes.toString("base64");
+      if (canonicalBase64 !== contentBase64) {
+        throw new Error("The selected image data is invalid");
+      }
+      const resolvedMimeType = iconMimeType(normalizedFilename, mimeType);
+      db.transaction(() => {
+        db.prepare(
+          `INSERT INTO project_icon_uploads (
+             project_id, filename, mime_type, content_base64,
+             size_bytes, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(project_id) DO UPDATE SET
+             filename = excluded.filename,
+             mime_type = excluded.mime_type,
+             content_base64 = excluded.content_base64,
+             size_bytes = excluded.size_bytes,
+             updated_at = excluded.updated_at`,
+        ).run(
+          projectId,
+          normalizedFilename,
+          resolvedMimeType,
+          canonicalBase64,
+          bytes.byteLength,
+          Date.now(),
+        );
+        db.prepare(`DELETE FROM project_icons WHERE project_id = ?`).run(
+          projectId,
+        );
+      })();
+      clearProjectIconCache(projectId);
+      bb.realtime.publish(PROJECT_ICONS_CHANNEL, { projectId });
+      return { customPath: null, customUploadName: normalizedFilename };
+    },
+    listLifecycle: async ({ signals }) => {
+      // The policy pass runs here rather than through a fifth mount RPC. A
+      // failure must not cost the user their shelves, so it is logged and the
+      // stored rows are answered either way.
+      const live = new Set(
+        signals
+          .filter(
+            (signal) => signal.hasPendingInteraction || signal.isWorking,
+          )
+          .map((signal) => signal.threadId),
+      );
+      try {
+        await evaluatePolicies(live);
+      } catch (error) {
+        bb.log.error(
+          `Automatic settle evaluation failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return { rows: readAllLifecycle() };
+    },
+    settle: async ({ threadId }) => {
+      // Native pinning and this plugin's settled shelf are competing ways to
+      // keep a thread out of the ordinary inbox. Settling wins, and a failed
+      // unpin leaves the lifecycle row untouched instead of half-applying it.
+      await bb.sdk.threads.unpin({ threadId });
+      // Settling clears any snooze: they are two answers to the same
+      // question, and holding both would make the shelf order ambiguous.
+      writeLifecycle({
+        threadId,
+        settledAt: Date.now(),
+        settledOverride: "settled",
+        snoozedUntil: null,
+        snoozedAt: null,
+      });
+      return { ok: true };
+    },
+    unsettle: ({ threadId }) => {
+      const current = readLifecycle(threadId);
+      writeLifecycle({
+        threadId,
+        settledAt: null,
+        settledOverride: "active",
+        snoozedUntil: current?.snoozedUntil ?? null,
+        snoozedAt: current?.snoozedAt ?? null,
+      });
+      return { ok: true };
+    },
+    snooze: ({ threadId, snoozedUntil }) => {
+      writeLifecycle({
+        threadId,
+        settledAt: null,
+        settledOverride: null,
+        snoozedUntil,
+        snoozedAt: Date.now(),
+      });
+      return { ok: true };
+    },
+    unsnooze: ({ threadId }) => {
+      clearLifecycle(threadId);
+      return { ok: true };
+    },
+    acknowledgeWake: ({ threadId }) => {
+      // A woken snooze row is retained only to make the marker durable. Once
+      // the user opens or dismisses it, the thread is ordinary active work.
+      clearLifecycle(threadId);
+      return { ok: true };
+    },
+    bulkSettle: async ({ threadIds }) => {
+      const unpinned = await runBulkThreadAction(
+        threadIds,
+        async (threadId) => {
+          await bb.sdk.threads.unpin({ threadId });
+        },
+        4,
+      );
+      const now = Date.now();
+      writeManyLifecycle(
+        unpinned.succeededThreadIds.map((threadId) => ({
+          threadId,
+          settledAt: now,
+          settledOverride: "settled" as const,
+          snoozedUntil: null,
+          snoozedAt: null,
+        })),
+      );
+      publishLifecycleChanges(unpinned.succeededThreadIds);
+      return unpinned;
+    },
+    bulkSnooze: ({ threadIds, snoozedUntil }) => {
+      const now = Date.now();
+      writeManyLifecycle(
+        threadIds.map((threadId) => ({
+          threadId,
+          settledAt: null,
+          settledOverride: null,
+          snoozedUntil,
+          snoozedAt: now,
+        })),
+      );
+      publishLifecycleChanges(threadIds);
+      return { succeededThreadIds: [...threadIds], failures: [] };
+    },
+    evaluateAutoSettle: async () => ({
+      changedThreadIds: await evaluatePolicies(),
+    }),
+  });
+
+  await reconcileProjects("server-start");
+
+  // Real work clears both kinds of manual settle override. The next quiet
+  // period can then be judged against the current policies.
+  bb.events.on("thread.active", ({ thread }) => {
+    clearSettlingState(thread.id);
   });
 
   bb.events.on("thread.deleted", ({ thread }) => {
@@ -582,12 +1905,20 @@ export default async function plugin(bb: BbPluginApi) {
       const accent = db
         .prepare(`DELETE FROM thread_accents WHERE thread_id = ?`)
         .run(thread.id);
-      const lifecycle = db
-        .prepare(`DELETE FROM thread_lifecycle WHERE thread_id = ?`)
-        .run(thread.id);
-      return membership.changes + accent.changes + lifecycle.changes;
+      const lifecycle = deleteLifecycle.run(thread.id);
+      return {
+        organization: membership.changes + accent.changes,
+        lifecycle: lifecycle.changes,
+      };
     })();
-    if (removed > 0) publishOrganization("thread.deleted");
+    if (removed.organization + removed.lifecycle > 0) {
+      publishOrganization("thread.deleted");
+    }
+    // A deleted thread must not leave a lifecycle row behind: a future thread
+    // reusing the id would come back already parked.
+    if (removed.lifecycle > 0) {
+      bb.realtime.publish(LIFECYCLE_CHANNEL, { threadId: thread.id });
+    }
     // A deleted id must not leave an order row behind that would place a
     // future thread reusing the id, and stale rows accumulate otherwise.
     const removedOrder = db

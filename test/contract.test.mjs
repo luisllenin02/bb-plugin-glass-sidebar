@@ -8,6 +8,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 const appSource = await readFile(path.join(root, "app.tsx"), "utf8");
 const appBundle = await readFile(path.join(root, "dist/app.js"), "utf8");
+const serverBundle = await readFile(path.join(root, "dist/server.js"), "utf8");
 
 async function sourceFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -26,6 +27,7 @@ test("manifest and exclusive slot match the scaffold contract", () => {
   assert.equal(manifest.engines.bbPluginSdk, ">=0.4.34");
   assert.equal(manifest.bb.server, "./server.ts");
   assert.equal(manifest.bb.app, "./app.tsx");
+  assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ["zod"]);
   assert.equal(
     (appSource.match(/app\.slots\.experimental_threadList\(/g) ?? []).length,
     1,
@@ -38,7 +40,26 @@ test("production bundles stay within their weight and polling budgets", async ()
   const serverSize = (await stat(path.join(root, "dist/server.js"))).size;
   assert.ok(appSize <= 300 * 1024, `dist/app.js is ${appSize} bytes`);
   assert.ok(serverSize <= 800 * 1024, `dist/server.js is ${serverSize} bytes`);
-  assert.doesNotMatch(appBundle, /setInterval\s*\(/);
+  assert.ok(
+    (appBundle.match(/setInterval\s*\(/g) ?? []).length <= 2,
+    "only the minute clock and Q3 workflow fallback may use setInterval",
+  );
+  assert.doesNotMatch(serverBundle, /setInterval\s*\(/);
+  assert.doesNotMatch(serverBundle, /(?:child_process|spawnSync|execFile|fs\.watch)/);
+});
+
+test("setInterval is confined to the two budgeted frontend owners", async () => {
+  const allowed = new Set([
+    path.join(root, "src", "ThreadList.tsx"),
+    path.join(root, "src", "useWorkflowActivity.ts"),
+  ]);
+  for (const filename of await sourceFiles(path.join(root, "src"))) {
+    if (!/\.(?:ts|tsx)$/.test(filename)) continue;
+    const source = await readFile(filename, "utf8");
+    if (/setInterval\s*\(/.test(source)) {
+      assert.ok(allowed.has(filename), filename);
+    }
+  }
 });
 
 test("source uses named Hugeicons catalog imports only", async () => {

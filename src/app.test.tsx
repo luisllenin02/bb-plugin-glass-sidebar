@@ -69,6 +69,7 @@ it("registers one thread list and renders one shortcut row per seeded thread", a
   ).toHaveLength(threads.length);
   expect(
     slot.container.querySelector('[data-sidebar-thread-id="thr_1"]')
+      ?.closest("[data-thread-pane-state]")
       ?.getAttribute("data-thread-pane-state"),
   ).toBe("focused");
 

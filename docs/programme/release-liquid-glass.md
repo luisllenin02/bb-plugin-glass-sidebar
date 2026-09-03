@@ -113,3 +113,26 @@ bb theme list
 - Fix: header and composer chrome gradients now fade to fully transparent instead of to the pane alpha (the chrome sits on the pane, so the two tints stacked and the bars read solid). `chromeOpacity` range now starts at 0 so the chrome can be pure blur.
 - User dials set on request: chromeOpacity 0.35, chromeFade 72 (was 0.67 / 50). Other values unchanged.
 - Tag `v0.5.6` on `main`, release https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.6; still inside the marketplace `^0.5.4` range. Follow-up commit `cdb133a` fixes a test pattern only.
+
+## Liquid Glass v0.5.7 and v0.5.8 — 2026-09-03
+
+- `v0.5.7` fixes host hover tooltips inheriting dark primary text after their
+  surfaces are restyled as frosted glass.
+- `v0.5.8` makes the new-thread home-composer shell transparent so only the
+  prompt card receives the frosted surface.
+- Releases: https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.7 and https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.8
+- Both remain inside the marketplace entry's `^0.5.4` range; no marketplace
+  entry change was required.
+
+## Glass Sidebar v1.0.0 — 2026-09-03
+
+- Release commit: `c470119`; tag `v1.0.0` on `main`.
+- Repository: https://github.com/luisllenin02/bb-plugin-glass-sidebar
+- GitHub release: https://github.com/luisllenin02/bb-plugin-glass-sidebar/releases/tag/v1.0.0
+- Marketplace commit: `a3de7ae` in `luisllenin02/marketplace`.
+- Marketplace PR: https://github.com/get-bb/marketplace/pull/180
+- Marketplace source: Git range `^1.0.0`, plugin id `glass-sidebar`, category
+  `thread-management`, vendored icon `glass-sidebar-e2480dc4.svg`.
+- Validation: 61 Vitest files / 380 tests, 10 Node contract tests, TypeScript
+  typecheck, `bb plugin build`, marketplace build/tests/v1 gate/liveness all
+  passed. The release worktree is clean on `main`; the path install is running.

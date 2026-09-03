@@ -4,6 +4,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentProps,
   type MouseEvent as ReactMouseEvent,
@@ -207,6 +208,8 @@ export function ThreadList({
   const [selection, setSelection] = useState<ThreadSelectionState>(
     EMPTY_THREAD_SELECTION,
   );
+  const activeThreadIdRef = useRef(activeThreadId);
+  activeThreadIdRef.current = activeThreadId;
   const [bulkBusy, setBulkBusy] = useState(false);
   const [scope, setScope] = useState(ALL_PROJECTS);
   const [activeSortMode, setActiveSortMode] = useState(readActiveSort);
@@ -512,10 +515,11 @@ export function ThreadList({
     try {
       const result = await action(targets);
       finishBulkAction(result);
+      const currentActiveThreadId = activeThreadIdRef.current;
       if (
         parksThreads &&
-        activeThreadId !== null &&
-        result.succeededThreadIds.includes(activeThreadId)
+        currentActiveThreadId !== null &&
+        result.succeededThreadIds.includes(currentActiveThreadId)
       ) {
         const parkedIds = new Set(result.succeededThreadIds);
         const activeRows = [
@@ -525,7 +529,7 @@ export function ThreadList({
           ...shelfInactive,
         ];
         const activeIndex = activeRows.findIndex(
-          (thread) => thread.id === activeThreadId,
+          (thread) => thread.id === currentActiveThreadId,
         );
         const nextThread =
           activeRows

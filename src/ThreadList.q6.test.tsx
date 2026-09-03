@@ -4,7 +4,7 @@ import type {
   PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_SIDEBAR_SETTINGS } from "./row-props";
 
@@ -199,5 +199,66 @@ it("parks only eligible selections, retains blocked rows, and navigates off the 
     threadId: "blocked",
   });
   expect(onNavigate).toHaveBeenCalledOnce();
+  slot.lifecycle.unmount();
+});
+
+it("does not replace newer navigation when a bulk park request finishes", async () => {
+  const app = await loadPluginApp(() => import("../app"));
+  const registration = app.threadLists[0]!;
+  const Component = registration.component;
+  let resolveBulkSettle!: (result: {
+    succeededThreadIds: string[];
+    failures: [];
+  }) => void;
+  const bulkSettle = vi.fn(
+    () =>
+      new Promise<{
+        succeededThreadIds: string[];
+        failures: [];
+      }>((resolve) => {
+        resolveBulkSettle = resolve;
+      }),
+  );
+  const onNavigate = vi.fn();
+  const threads = [
+    thread("active", "project", { createdAt: 2 }),
+    thread("next", "project", { createdAt: 1 }),
+  ];
+  const props: PluginThreadListProps = {
+    activeThreadId: "active",
+    activeProjectId: "project",
+    isCompactViewport: false,
+    onNavigate,
+    searchQuery: "",
+    Original: () => null,
+  };
+  const slot = renderSlot<PluginThreadListProps>(registration, props, {
+    sidebarThreads: {
+      status: "ready",
+      threads,
+      projects: [{ id: "project", name: "Project", isPersonal: false }],
+    },
+    rpc: { ...rpcDefaults, bulkSettle },
+  });
+
+  fireEvent.click(
+    slot.container.querySelector('[data-sidebar-thread-id="active"]')!,
+    { ctrlKey: true },
+  );
+  fireEvent.click(
+    slot.getByRole("button", { name: "Settle selected threads" }),
+  );
+  await waitFor(() => expect(bulkSettle).toHaveBeenCalledOnce());
+
+  slot.lifecycle.rerender(<Component {...props} activeThreadId="next" />);
+  await act(async () => {
+    resolveBulkSettle({ succeededThreadIds: ["active"], failures: [] });
+  });
+  await waitFor(() =>
+    expect(slot.queryByRole("toolbar")).toBeNull(),
+  );
+
+  expect(slot.inspection.sidebarActionCalls).toEqual([]);
+  expect(onNavigate).not.toHaveBeenCalled();
   slot.lifecycle.unmount();
 });

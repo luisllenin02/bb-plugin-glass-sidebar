@@ -5,11 +5,18 @@ import {
   type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
 import { cn } from "./lib/utils";
+import { AccentRail } from "./AccentRail";
 import { Icon } from "./components/Icon";
 import { Disc } from "./Disc";
+import { PaneGlyph } from "./PaneGlyph";
 import { RowContextMenu } from "./RowContextMenu";
 import { StatusGlyph } from "./StatusGlyph";
 import { WorkflowRunRow } from "./WorkflowRunRow";
+import {
+  resolvePaneState,
+  rowRootClasses,
+  rowTitleClass,
+} from "./pane-state";
 import {
   buildRelatedThreadTree,
   type RelatedThreadTreeNode,
@@ -89,6 +96,7 @@ export function RelatedThreadNode({
   const { splitProps, layout } = useSidebarThreadSplit(node.thread.id);
   const [expanded, setExpanded] = useState(true);
   const title = threadDisplayTitle(node.thread);
+  const paneState = resolvePaneState(false, layout);
   const nodeRuns = workflowRuns.filter(
     (run) => run.originThreadId === node.thread.id,
   );
@@ -127,18 +135,27 @@ export function RelatedThreadNode({
               onOpen?.();
               actions.open(node.thread.id, { split: false });
             }}
+            data-thread-pane-state={paneState}
             className={cn(
-              "relative z-10 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground outline-none hover:bg-accent hover:text-foreground",
-              layout !== null && "bg-sidebar-accent/30",
+              "relative z-10 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground outline-none hover:text-foreground",
+              rowRootClasses({
+                state: paneState,
+                hasAccent: false,
+                isSelected: false,
+              }),
             )}
           >
+            <AccentRail state={paneState} />
             <Disc thread={node.thread} />
             <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate">{title}</span>
+              <span className={cn("truncate", rowTitleClass(paneState))}>
+                {title}
+              </span>
               <span className="truncate text-2xs text-muted-foreground/70">
                 {node.thread.originKind ?? "thread"}
               </span>
             </span>
+            {layout !== null ? <PaneGlyph panes={layout.panes} /> : null}
             <StatusGlyph
               indicator={node.thread.indicator}
               label={node.thread.indicatorLabel}

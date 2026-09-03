@@ -263,3 +263,15 @@ bb theme list
   #177 needs no metadata change.
 - Validation: 30 Node contract tests, 63 Vitest tests, TypeScript typecheck,
   `bb plugin build`, path install, and plugin reload passed.
+
+## Liquid Glass v0.5.18 — 2026-09-03
+
+- Fix: clear the `bg-sidebar` wrapper used by compact side-chat composers and
+  its above-footer fade, while retaining the raised surface only on the prompt
+  card so the footer controls do not sit inside a dark rectangle.
+- Release commit: `6d7057f`; tag `v0.5.18` on `main`.
+- GitHub release: https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.18
+- The marketplace entry's `^0.5.4` range already includes this patch, so PR
+  #177 needs no metadata change.
+- Validation: 30 Node contract tests, 63 Vitest tests, TypeScript typecheck,
+  `bb plugin build`, and path install passed.

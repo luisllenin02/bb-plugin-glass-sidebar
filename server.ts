@@ -1349,17 +1349,94 @@ export default async function plugin(bb: BbPluginApi) {
     },
   );
 
+  /**
+   * Live-work signals last this long. A client only reports them when it reads
+   * `listLifecycle`, so the window has to outlive several sweeps of the
+   * five-minute schedule; auto-settle needs days of quiet anyway, so holding a
+   * thread active a little too long costs nothing, while dropping the signal
+   * hides work the user is watching.
+   */
+  const LIVE_SIGNAL_TTL_MS = 15 * 60_000;
+  const MAX_LIVE_SIGNAL_ENTRIES = 10_000;
+  /** Thread id -> when a client last reported it live. Insertion order is
+   * recency order, because every write deletes before it sets. */
+  const liveSignalSeenAt = new Map<string, number>();
+
+  const pruneLiveSignals = (now: number) => {
+    for (const [threadId, seenAt] of liveSignalSeenAt) {
+      if (now - seenAt < LIVE_SIGNAL_TTL_MS) break;
+      liveSignalSeenAt.delete(threadId);
+    }
+    while (liveSignalSeenAt.size > MAX_LIVE_SIGNAL_ENTRIES) {
+      const oldest = liveSignalSeenAt.keys().next();
+      if (oldest.done) break;
+      liveSignalSeenAt.delete(oldest.value);
+    }
+  };
+
+  const recordLiveThreads = (
+    threadIds: Iterable<string>,
+    now: number,
+  ): void => {
+    for (const threadId of threadIds) {
+      liveSignalSeenAt.delete(threadId);
+      liveSignalSeenAt.set(threadId, now);
+    }
+    pruneLiveSignals(now);
+  };
+
+  /**
+   * Everything the server can say is live right now: the fresh client signals
+   * above, plus the Workflows store's own queued and running rows, which are
+   * server-side truth and so protect a thread even when no client is open.
+   */
+  const liveThreadIdsNow = (now: number): Set<string> => {
+    pruneLiveSignals(now);
+    const live = new Set(liveSignalSeenAt.keys());
+    try {
+      for (const run of readWorkflowActivity(
+        workflowSourcePath,
+        openSiblingDatabase,
+        now,
+      ).runs) {
+        live.add(run.originThreadId);
+      }
+    } catch {
+      // A missing or unreadable sibling store must not stop the sweep; the
+      // client signals still stand.
+    }
+    return live;
+  };
+
   let policyEvaluation: Promise<string[]> | null = null;
+  /** The live set the in-flight pass actually decided against, frozen at its
+   * decision point so a later caller can tell whether it was covered. */
+  let policyEvaluationLive: Set<string> | null = null;
+  let policyEvaluationDecided = false;
   /**
    * Idempotent: it publishes at most once, and only when it changed state, so
    * a refresh triggered by its own signal cannot loop. Concurrent callers
    * coalesce onto one pass, which is what keeps a freshly opened client from
-   * repeating the thread and PR work.
+   * repeating the thread and PR work — but only when that pass honoured their
+   * live work. A caller reporting live threads the in-flight pass had already
+   * decided without chains a fresh pass instead of inheriting its answer.
    */
   const evaluatePolicies = (
     liveThreadIds: ReadonlySet<string> = new Set(),
   ): Promise<string[]> => {
-    if (policyEvaluation !== null) return policyEvaluation;
+    recordLiveThreads(liveThreadIds, Date.now());
+    if (policyEvaluation !== null) {
+      const inFlight = policyEvaluation;
+      const missed =
+        policyEvaluationDecided &&
+        [...liveThreadIds].some(
+          (threadId) => policyEvaluationLive?.has(threadId) !== true,
+        );
+      if (!missed) return inFlight;
+      return inFlight.then(() => evaluatePolicies(liveThreadIds));
+    }
+    policyEvaluationLive = new Set(liveThreadIds);
+    policyEvaluationDecided = false;
     policyEvaluation = (async () => {
       const configured = readAutoSettleSettings();
       const threads = await loadPolicyThreads();
@@ -1382,8 +1459,14 @@ export default async function plugin(bb: BbPluginApi) {
         ),
         onMerge: configured.autoSettleOnMerge,
       };
+      // Read the live set here, not at call time: the scheduled sweep passes
+      // none of its own, and a client that reported live work while the thread
+      // and PR reads were in flight must still be honoured.
+      const live = policyEvaluationLive ?? new Set<string>();
+      for (const threadId of liveThreadIdsNow(now)) live.add(threadId);
+      policyEvaluationDecided = true;
       const changes = threads.flatMap((thread) => {
-        if (liveThreadIds.has(thread.id)) return [];
+        if (live.has(thread.id)) return [];
         const row = lifecycleByThreadId.get(thread.id) ?? null;
         const decision = decideAutoSettle({
           lifecycle: row,
@@ -1408,6 +1491,8 @@ export default async function plugin(bb: BbPluginApi) {
       return changedThreadIds;
     })().finally(() => {
       policyEvaluation = null;
+      policyEvaluationLive = null;
+      policyEvaluationDecided = false;
     });
     return policyEvaluation;
   };

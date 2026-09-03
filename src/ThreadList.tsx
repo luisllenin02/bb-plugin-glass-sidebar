@@ -46,6 +46,7 @@ import { useLifecycle } from "./useLifecycle";
 import type { ConfiguredSnoozePreset } from "./row-props";
 import {
   DEFAULT_SETTINGS_ACCESS,
+  DEFAULT_SIDEBAR_SETTINGS,
   EMPTY_DECOR_ACCESS,
   EMPTY_LIFECYCLE_ACCESS,
   EMPTY_ORGANIZATION_ACCESS,
@@ -154,6 +155,20 @@ function visibleShelfThreads(
   );
 }
 
+/**
+ * True once `getSidebarSettings` has actually answered (or a cached answer was
+ * available). The fork holds its settings at `null` until then, so neither the
+ * Inactive tier nor auto project colours acts on a guess during first paint —
+ * a thread is never filed away, and a row is never coloured, on a default the
+ * user may have turned off. Q6's hook seeds the frozen defaults object instead
+ * of `null`, so identity against those two frozen objects is the same signal.
+ */
+function sidebarSettingsLoaded(settings: SettingsAccess): boolean {
+  return (
+    settings !== DEFAULT_SETTINGS_ACCESS && settings !== DEFAULT_SIDEBAR_SETTINGS
+  );
+}
+
 export function ThreadList({
   activeThreadId,
   activeProjectId,
@@ -171,7 +186,9 @@ export function ThreadList({
   organization = useOrganization({
     resolveAccentSource: (threadId, projectId, current, options) =>
       resolveAccentSource(threadId, projectId, current, decor.projects, {
-        autoProjectColours: settings.autoProjectColours ?? options.autoProjectColours,
+        autoProjectColours: sidebarSettingsLoaded(settings)
+          ? (settings.autoProjectColours ?? options.autoProjectColours)
+          : false,
       }),
   });
   let workflow: WorkflowAccess = EMPTY_WORKFLOW_ACCESS;
@@ -209,7 +226,7 @@ export function ThreadList({
   const snoozePresets: readonly ConfiguredSnoozePreset[] =
     parseConfiguredSnoozePresets(settings.snoozePresets);
   const inactiveAfterHours = parseInactiveAfterHours(
-    settings.inactiveThreadsEnabled,
+    sidebarSettingsLoaded(settings) && settings.inactiveThreadsEnabled,
     String(settings.inactiveAfterHours),
   );
   const [nowMinute, setNowMinute] = useState(() =>
@@ -462,6 +479,20 @@ export function ThreadList({
     return true;
   };
 
+  // Parking is refused for a thread that is working or holding a raised hand:
+  // the bulk bar must not be able to hide live work behind a shelf. The
+  // ineligible rows are filtered out of the payload, so neither a mixed
+  // selection nor a race between render and click can park them. A mixed
+  // selection keeps its controls live and parks the eligible rows (Q6 owns
+  // that behaviour on the shared bar); only a wholly ineligible one goes dead.
+  const parkableSelection = selectedThreads.some((thread) =>
+    lifecycle.canPark(thread),
+  );
+  const parkableIds = (targets: readonly PluginSidebarThread[]): string[] =>
+    targets
+      .filter((thread) => lifecycle.canPark(thread))
+      .map((thread) => thread.id);
+
   const finishBulkAction = (result: BulkActionResult) => {
     setSelection(
       keepFailedSelection(
@@ -590,18 +621,15 @@ export function ThreadList({
             <BulkSelectionBar
               count={selectedThreads.length}
               busy={bulkBusy}
-              lifecycleEnabled
+              lifecycleEnabled={parkableSelection}
               onSettle={() =>
                 void runSelectedAction((targets) =>
-                  lifecycle.bulkSettle(targets.map((thread) => thread.id)),
+                  lifecycle.bulkSettle(parkableIds(targets)),
                 )
               }
               onSnooze={(snoozedUntil) =>
                 void runSelectedAction((targets) =>
-                  lifecycle.bulkSnooze(
-                    targets.map((thread) => thread.id),
-                    snoozedUntil,
-                  ),
+                  lifecycle.bulkSnooze(parkableIds(targets), snoozedUntil),
                 )
               }
               onMarkRead={() =>

@@ -7,6 +7,7 @@ import type {
   PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import type { StoredLifecycleRow } from "../server";
+import { DEFAULT_SIDEBAR_SETTINGS } from "./row-props";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 Object.defineProperty(Element.prototype, "scrollIntoView", {
@@ -292,21 +293,22 @@ describe("parked shelves", () => {
   });
 });
 
+const quietThreads = () => [
+  thread({ id: "thr_fresh", title: "Fresh" }),
+  thread({
+    id: "thr_stale",
+    title: "Stale",
+    createdAt: NOW - 8 * 60 * 60 * 1_000,
+    updatedAt: NOW - 8 * 60 * 60 * 1_000,
+    latestAttentionAt: NOW - 8 * 60 * 60 * 1_000,
+  }),
+];
+
 describe("inactive threads", () => {
   it("files a quiet thread under Inactive at the configured threshold", async () => {
-    renderList(
-      [
-        thread({ id: "thr_fresh", title: "Fresh" }),
-        thread({
-          id: "thr_stale",
-          title: "Stale",
-          createdAt: NOW - 8 * 60 * 60 * 1_000,
-          updatedAt: NOW - 8 * 60 * 60 * 1_000,
-          latestAttentionAt: NOW - 8 * 60 * 60 * 1_000,
-        }),
-      ],
-      [],
-    );
+    renderList(quietThreads(), [], {
+      getSidebarSettings: () => ({ ...DEFAULT_SIDEBAR_SETTINGS }),
+    } as never);
 
     const inactive = await screen.findByRole("region", { name: "Inactive" });
     expect(
@@ -318,5 +320,97 @@ describe("inactive threads", () => {
 
     fireEvent.click(within(inactive).getByRole("button", { name: /Inactive/ }));
     expect(within(inactive).getByText("Stale")).toBeDefined();
+  });
+
+  it("files nothing away until the settings read answers", async () => {
+    // The fork holds `sidebarSettings` at null until `getSidebarSettings`
+    // returns, so a quiet thread is never hidden on a default the user may
+    // have switched off. Without this the first paint files threads under
+    // Inactive and then has to take them back.
+    renderList(quietThreads(), [], {
+      getSidebarSettings: () => {
+        throw new Error("settings backend still reloading");
+      },
+    } as never);
+
+    const active = await screen.findByRole("region", { name: "Active" });
+    expect(within(active).getByText("Fresh")).toBeDefined();
+    expect(within(active).getByText("Stale")).toBeDefined();
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Inactive" })).toBeNull(),
+    );
+  });
+});
+
+describe("bulk parking", () => {
+  const anchorFor = (threadId: string) =>
+    document.querySelector<HTMLAnchorElement>(
+      `[data-sidebar-thread-id="${threadId}"]`,
+    )!;
+
+  const settleButton = (bar: HTMLElement) =>
+    within(bar).getByRole("button", {
+      name: "Settle selected threads",
+    }) as HTMLButtonElement;
+
+  it("never parks a selected thread that is still working", async () => {
+    // Behavioural, not visual: whether the bar disables the button on a mixed
+    // selection or filters on the way out, the live row must not reach the RPC.
+    const settled: string[][] = [];
+    const bulkSettle = vi.fn(({ threadIds }: { threadIds: string[] }) => {
+      settled.push(threadIds);
+      return { succeededThreadIds: threadIds, failures: [] };
+    });
+    renderList(
+      [
+        thread({ id: "thr_idle", title: "Idle" }),
+        thread({
+          id: "thr_busy",
+          title: "Busy",
+          indicator: "runtime",
+          indicatorLabel: "Working",
+        }),
+      ],
+      [],
+      { bulkSettle } as never,
+    );
+    await screen.findByText("Idle");
+    fireEvent.click(anchorFor("thr_idle"), { ctrlKey: true });
+    fireEvent.click(anchorFor("thr_busy"), { ctrlKey: true });
+    const bar = await screen.findByRole("toolbar", {
+      name: "2 threads selected",
+    });
+
+    fireEvent.click(settleButton(bar));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled.flat()).not.toContain("thr_busy");
+  });
+
+  it("sends only the parkable ids when the bulk settle fires", async () => {
+    const calls: unknown[] = [];
+    const bulkSettle = vi.fn((input: unknown) => {
+      calls.push(input);
+      return { succeededThreadIds: ["thr_idle"], failures: [] };
+    });
+    renderList(
+      [
+        thread({ id: "thr_idle", title: "Idle" }),
+        thread({ id: "thr_quiet", title: "Quiet" }),
+      ],
+      [],
+      { bulkSettle } as never,
+    );
+    await screen.findByText("Idle");
+    fireEvent.click(anchorFor("thr_idle"), { ctrlKey: true });
+    fireEvent.click(anchorFor("thr_quiet"), { ctrlKey: true });
+    const bar = await screen.findByRole("toolbar", {
+      name: "2 threads selected",
+    });
+    // Every selected row is parkable, so the bar's lifecycle controls are live.
+    expect(settleButton(bar).disabled).toBe(false);
+
+    fireEvent.click(settleButton(bar));
+    await waitFor(() => expect(bulkSettle).toHaveBeenCalledTimes(1));
+    expect(calls[0]).toEqual({ threadIds: ["thr_idle", "thr_quiet"] });
   });
 });

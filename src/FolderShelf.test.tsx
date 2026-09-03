@@ -27,9 +27,6 @@ Object.defineProperty(Document.prototype, "elementFromPoint", {
 const app = await loadPluginApp(() => import("../app"));
 const inbox = app.threadLists[0]!;
 
-/** Recent enough that Q5's default 6-hour Inactive rule does not apply. */
-const RECENT_ACTIVITY = Date.now() - 60_000;
-
 function thread(overrides: Partial<PluginSidebarThread>): PluginSidebarThread {
   return {
     id: "thread",
@@ -57,11 +54,9 @@ function thread(overrides: Partial<PluginSidebarThread>): PluginSidebarThread {
     environment: null,
     host: null,
     createdAt: 1,
-    // Q5: recent activity, so the default 6-hour Inactive rule leaves this
-    // fixture on the Active shelf. Ordering still comes from createdAt.
-    updatedAt: RECENT_ACTIVITY,
-    lastReadAt: RECENT_ACTIVITY,
-    latestAttentionAt: RECENT_ACTIVITY,
+    updatedAt: 1,
+    lastReadAt: 1,
+    latestAttentionAt: 1,
     ...overrides,
   };
 }

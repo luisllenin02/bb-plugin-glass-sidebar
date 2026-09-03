@@ -93,6 +93,14 @@ function rawRows(db: { prepare: (sql: string) => { all: () => unknown[] } }) {
     .all() as RawLifecycleRow[];
 }
 
+function lifecycleSignals(harness: {
+  inspection: { realtimeSignals: readonly { channel: string }[] };
+}) {
+  return harness.inspection.realtimeSignals.filter(
+    (signal) => signal.channel === "lifecycle",
+  );
+}
+
 /** Every raw row's three mirrors agree with the pure helper. */
 function expectMirrorsConsistent(rows: readonly RawLifecycleRow[]) {
   expect(rows.length).toBeGreaterThan(0);
@@ -520,7 +528,7 @@ describe("automatic settle evaluation", () => {
 
   it("registers exactly one 5-minute schedule and no server timer", async () => {
     const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
-    const { harness } = await loadPlugin({
+    const { harness, db } = await loadPlugin({
       threads: async () => [
         makeThreadResponse({
           id: "thr_scheduled",
@@ -540,15 +548,99 @@ describe("automatic settle evaluation", () => {
     ).toEqual([{ name: "auto-settle", cron: "*/5 * * * *" }]);
     expect(harness.inspection.registrations.services).toEqual([]);
 
+    // The raw table and the signal log are read before any RPC, so a no-op
+    // schedule callback could not pass this: `listLifecycle` runs the same
+    // evaluation and would settle the row itself.
+    expect(rawRows(db)).toEqual([]);
     await harness.behavior.runSchedule("auto-settle");
+    expect(
+      rawRows(db).map((row) => ({ id: row.thread_id, state: row.state })),
+    ).toEqual([{ id: "thr_scheduled", state: "settled" }]);
+    expect(lifecycleSignals(harness)).toEqual([
+      { channel: "lifecycle", payload: { threadIds: ["thr_scheduled"] } },
+    ]);
+
+    // A second sweep changes nothing, so it publishes nothing.
+    const before = harness.inspection.realtimeSignals.length;
+    await harness.behavior.runSchedule("auto-settle");
+    expect(harness.inspection.realtimeSignals).toHaveLength(before);
+    expect(rawRows(db)).toHaveLength(1);
+
     await expect(
       harness.behavior.callRpc("listLifecycle", {}),
     ).resolves.toEqual({
       rows: [expect.objectContaining({ threadId: "thr_scheduled" })],
     });
-    // A second sweep changes nothing, so it publishes nothing.
-    const before = harness.inspection.realtimeSignals.length;
+  });
+
+  it("spares a thread the client reported live when the schedule sweeps", async () => {
+    // The exact failure this guards: the host reports the thread idle, but the
+    // sidebar can see a workflow or a raised hand it cannot. The signal is
+    // remembered on the server, so the scheduled pass — which carries no
+    // signals of its own — honours it too.
+    const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
+    const { harness, db } = await loadPlugin({
+      threads: async () => [
+        makeThreadResponse({
+          id: "thr_live",
+          createdAt: old,
+          updatedAt: old,
+          latestAttentionAt: old,
+          status: "idle",
+        }),
+      ],
+    });
+
+    await harness.behavior.callRpc("listLifecycle", {
+      signals: [
+        { threadId: "thr_live", hasPendingInteraction: true, isWorking: false },
+      ],
+    });
+    expect(rawRows(db)).toEqual([]);
+
     await harness.behavior.runSchedule("auto-settle");
-    expect(harness.inspection.realtimeSignals).toHaveLength(before);
+    expect(rawRows(db)).toEqual([]);
+    expect(lifecycleSignals(harness)).toEqual([]);
+  });
+
+  it("merges a client's live set into a sweep that is already in flight", async () => {
+    // Coalescing must not hand a caller an answer decided without its signals.
+    const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
+    let releaseThreads: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseThreads = resolve;
+    });
+    let gated = true;
+    const { harness, db } = await loadPlugin({
+      threads: async () => {
+        if (gated) {
+          gated = false;
+          await gate;
+        }
+        return [
+          makeThreadResponse({
+            id: "thr_live",
+            createdAt: old,
+            updatedAt: old,
+            latestAttentionAt: old,
+            status: "idle",
+          }),
+        ];
+      },
+    });
+
+    const sweep = harness.behavior.runSchedule("auto-settle");
+    const client = harness.behavior.callRpc("listLifecycle", {
+      signals: [
+        { threadId: "thr_live", hasPendingInteraction: false, isWorking: true },
+      ],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseThreads();
+    await sweep;
+    await client;
+
+    expect(rawRows(db)).toEqual([]);
+    expect(lifecycleSignals(harness)).toEqual([]);
   });
 });

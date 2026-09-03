@@ -470,6 +470,7 @@ export function NowRow({
         {rows.map((thread) => {
           const needsYou = classifyNow(thread) === "needs-you";
           const accent = liveStripAccent(thread, accentFor, projectDecor);
+          const decor = projectDecor[thread.projectId];
           const projectName = projectNameById.get(thread.projectId) ?? "";
           const title = threadDisplayTitle(thread);
           const age = relativeTimeLabel(thread.updatedAt, now);
@@ -499,6 +500,13 @@ export function NowRow({
                 )}
               >
                 <StatusGlyph indicator={statusIndicator} label={null} />
+                {decor ? (
+                  <ProjectGlyph
+                    decor={decor}
+                    resolvedAccent={accent}
+                    className="size-3.5"
+                  />
+                ) : null}
                 <ProjectDot accent={accent} />
                 <span className="min-w-0 flex-1 truncate font-medium text-foreground">
                   {context}

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import type Database from "better-sqlite3";
@@ -776,11 +775,8 @@ export default async function plugin(bb: BbPluginApi) {
       fileMustExist: true,
     });
   bb.storage.migrate(db, glassSidebarMigrations);
-  const defaultImportPaths = importSourcePaths(importDataDir(db.name, dataDir));
   let awaitingLegacyImport =
-    !db.prepare(`SELECT 1 FROM legacy_import_state WHERE id = 1`).get() &&
-    (existsSync(defaultImportPaths.sidebar) ||
-      existsSync(defaultImportPaths.projectIcons));
+    !db.prepare(`SELECT 1 FROM legacy_import_state WHERE id = 1`).get();
   let firstProjectDecorRead = true;
   const projectDecorStore = createProjectDecorStore(db);
   const projectSuggestions = new Map<string, AutoIconSuggestion>();

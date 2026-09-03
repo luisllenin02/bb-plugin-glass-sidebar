@@ -223,24 +223,35 @@ it("shares project decor across a row, folder header, and live-strip chip", asyn
   });
 
   await screen.findByText("Integration folder");
-  await waitFor(() =>
-    expect(
-      slot.container.querySelectorAll("[data-project-glyph-source=project-decor]"),
-    ).toHaveLength(2),
-  );
-  for (const node of slot.container.querySelectorAll<HTMLElement>(
-    "[data-project-glyph-source=project-decor]",
-  )) {
-    expect(node.style.getPropertyValue("--project-glyph-color")).toBe(colour);
-  }
   const row = slot.container
     .querySelector('[data-sidebar-thread-id="thr_integration"]')!
     .closest<HTMLElement>("[data-thread-pane-state]")!;
-  expect(row.style.getPropertyValue("--thread-accent")).toBe(colour);
-  expect(row.dataset.projectAccentSource).toBe("project-decor");
+  const folderHeader = slot.container.querySelector<HTMLElement>(
+    '[data-folder-container-id="fld_integration"]',
+  )!;
   const liveChip = slot.container.querySelector<HTMLElement>(
     '[data-live-strip="now"]',
   )!;
+  await waitFor(() => {
+    const rowGlyph = row.querySelector<HTMLElement>(
+      '[data-project-glyph-source="project-decor"]',
+    );
+    const folderGlyph = folderHeader.querySelector<HTMLElement>(
+      '[data-project-glyph-source="project-decor"]',
+    );
+    const liveGlyph = liveChip.querySelector<HTMLElement>(
+      '[data-project-glyph-source="project-decor"]',
+    );
+    for (const projectGlyph of [rowGlyph, folderGlyph, liveGlyph]) {
+      expect(projectGlyph).not.toBeNull();
+      expect(projectGlyph!.style.getPropertyValue("--project-glyph-color")).toBe(colour);
+      expect(
+        projectGlyph!.querySelector('path[d="M4 4h16v16H4z"]'),
+      ).not.toBeNull();
+    }
+  });
+  expect(row.style.getPropertyValue("--thread-accent")).toBe(colour);
+  expect(row.dataset.projectAccentSource).toBe("project-decor");
   const liveColour = [...liveChip.querySelectorAll<HTMLElement>("span")].find(
     (node) => node.style.getPropertyValue("--thread-accent") === colour,
   );

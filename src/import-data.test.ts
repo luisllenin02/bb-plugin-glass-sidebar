@@ -430,9 +430,10 @@ describe("import round-trip against the plugin's real migration list from empty"
     expect(harness.inspection.realtimeSignals).toHaveLength(signalCount);
   });
 
-  it("imports legacy project decor before first-start auto assignment can conflict", async () => {
+  it("preserves manual project decor from --from before first-start auto assignment", async () => {
     const dataDir = tempDataDir();
-    const paths = importSourcePaths(dataDir);
+    const overrideDataDir = tempDataDir();
+    const paths = importSourcePaths(overrideDataDir);
     const projectIcons = createProjectIconsStore(paths.projectIcons);
     projectIcons
       .prepare(
@@ -473,12 +474,16 @@ describe("import round-trip against the plugin's real migration list from empty"
     disposers.push(() => harness.lifecycle.dispose());
     const destination = bb.storage.database();
 
-    // The explicit import owns the first write while a legacy source exists.
+    // No source exists under the host's default data dir. The completion
+    // marker still holds reconciliation until an explicit --from import runs.
     expect(
       destination.prepare(`SELECT COUNT(*) AS count FROM project_decor`).get(),
     ).toEqual({ count: 0 });
-    await expect(harness.behavior.runCli(["import"])).resolves.toMatchObject({
+    await expect(
+      harness.behavior.runCli(["import", "--from", overrideDataDir]),
+    ).resolves.toMatchObject({
       exitCode: 0,
+      stdout: expect.stringMatching(/project_decor\s+1\s+1\s+0/),
     });
     expect(
       destination

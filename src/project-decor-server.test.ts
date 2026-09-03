@@ -36,8 +36,11 @@ async function loadProjectPlugin() {
 }
 
 describe("project decor RPCs", () => {
-  it("reconciles automatic rows on start and on the first read", async () => {
+  it("reconciles automatic rows after import completion", async () => {
     const harness = await loadProjectPlugin();
+    await expect(harness.behavior.runCli(["import"])).resolves.toMatchObject({
+      exitCode: 0,
+    });
     await expect(harness.behavior.callRpc("getProjectDecor", {})).resolves.toMatchObject({
       projects: {
         proj_alpha: {
@@ -55,7 +58,7 @@ describe("project decor RPCs", () => {
     ).toHaveLength(1);
     expect(harness.realtimeSignals).toContainEqual({
       channel: "project-decor",
-      payload: { reason: "server-start" },
+      payload: { reason: "import" },
     });
   });
 
@@ -93,6 +96,9 @@ describe("project decor RPCs", () => {
 
   it("serves only selected drawings and capped searched catalog results", async () => {
     const harness = await loadProjectPlugin();
+    await expect(harness.behavior.runCli(["import"])).resolves.toMatchObject({
+      exitCode: 0,
+    });
     const drawings = (await harness.behavior.callRpc("getProjectGlyphs", {
       projectIds: ["proj_alpha"],
     })) as { glyphs: Record<string, unknown[]> };

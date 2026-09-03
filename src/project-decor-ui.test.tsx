@@ -239,10 +239,11 @@ describe("project decor consumers", () => {
     await waitFor(() =>
       expect(
         document.querySelectorAll("[data-project-glyph-source=project-decor]"),
-      ).toHaveLength(2),
+      ).toHaveLength(3),
     );
     const glyphs = [...document.querySelectorAll<HTMLElement>("[data-project-glyph-source=project-decor]")];
     expect(glyphs.map((node) => node.style.getPropertyValue("--project-glyph-color"))).toEqual([
+      projectIconColorCss("blue"),
       projectIconColorCss("blue"),
       projectIconColorCss("blue"),
     ]);
@@ -257,6 +258,11 @@ describe("project decor consumers", () => {
     const stripChip = document.querySelector<HTMLElement>(
       '[data-live-strip="now"]',
     )!;
+    expect(
+      stripChip.querySelector<HTMLElement>(
+        '[data-project-glyph-source="project-decor"][data-project-icon="rocket"]',
+      ),
+    ).not.toBeNull();
     const stripDot = [...stripChip.querySelectorAll<HTMLElement>("span")].find(
       (node) => node.style.getPropertyValue("--thread-accent"),
     );

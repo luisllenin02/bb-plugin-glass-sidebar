@@ -8,6 +8,8 @@ const files = {
   threadList: await readFile(new URL("../src/ThreadList.tsx", import.meta.url), "utf8"),
   menu: await readFile(new URL("../src/RowContextMenu.tsx", import.meta.url), "utf8"),
   app: await readFile(new URL("../app.tsx", import.meta.url), "utf8"),
+  settings: await readFile(new URL("../src/SidebarSettings.tsx", import.meta.url), "utf8"),
+  bulk: await readFile(new URL("../src/BulkSelectionBar.tsx", import.meta.url), "utf8"),
 };
 
 const anchors = {
@@ -33,15 +35,21 @@ const anchors = {
     "menu:lifecycle (Q5)",
   ],
   app: ["header-actions (Q4)", "settings-section (Q6)"],
+  settings: [
+    "settings:project-colours (Q2)",
+    "settings:project-decor (Q4)",
+    "settings:lifecycle (Q5)",
+  ],
+  bulk: ["bulk:lifecycle (Q5)"],
 };
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-test("all 19 extension anchors occur exactly once in their owning file", () => {
+test("all 23 extension anchors occur exactly once in their owning file", () => {
   const entries = Object.entries(anchors);
-  assert.equal(entries.flatMap(([, ids]) => ids).length, 19);
+  assert.equal(entries.flatMap(([, ids]) => ids).length, 23);
   for (const [file, ids] of entries) {
     for (const id of ids) {
       const count = files[file].match(new RegExp(`@${escapeRegExp(id)}`, "g"))?.length ?? 0;

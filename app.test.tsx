@@ -35,12 +35,7 @@ describe("plugin registration", () => {
 
   it("registers at most one settings section, and exactly one after Q6", () => {
     const settingsSectionIds = record().settingsSection ?? [];
-    expect(settingsSectionIds.length).toBeLessThanOrEqual(1);
-    if (existsSync(new URL("./src/SidebarSettings.tsx", import.meta.url))) {
-      expect(settingsSectionIds).toEqual(["glass-sidebar-settings"]);
-    } else {
-      expect(settingsSectionIds).toEqual([]);
-    }
+    expect(settingsSectionIds).toEqual(["glass-sidebar-settings"]);
   });
 
   it("ships the paired child-thread controls", () => {

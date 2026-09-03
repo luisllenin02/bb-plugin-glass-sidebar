@@ -3,6 +3,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { projectIconColorCss } from "./accent";
 import { Icon } from "./components/Icon";
 import type { ProjectDecorEntry } from "./row-props";
+import { ProjectFavicon } from "./ProjectFavicon";
 
 /** Q1 fallback; Q4 replaces the drawing path with the owned decor catalog. */
 export function ProjectGlyph({
@@ -45,13 +46,18 @@ export function ProjectGlyph({
 
   if (faviconUrl) {
     return (
-      <img
-        src={faviconUrl}
-        alt=""
+      <span
         aria-hidden="true"
         data-project-glyph-source="favicon"
-        className={className}
-      />
+        className="inline-flex shrink-0 items-center justify-center"
+        style={styleFor(fallbackColor)}
+      >
+        <ProjectFavicon
+          src={faviconUrl}
+          className={className}
+          fallback={<Icon name="Folder" className={className} aria-hidden />}
+        />
+      </span>
     );
   }
 

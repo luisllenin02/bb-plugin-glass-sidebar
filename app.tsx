@@ -6,6 +6,7 @@ import { ThreadList } from "./src/ThreadList";
 import { ParentChip } from "./src/ParentChip";
 import { SubagentsChip } from "./src/SubagentsChip";
 import { ProjectChip } from "./src/ProjectChip";
+import { SidebarSettings } from "./src/SidebarSettings";
 
 const parentAction = {
   id: "parent",
@@ -45,4 +46,8 @@ export default definePluginApp((app) => {
   }
 
   /* @settings-section (Q6) */
+  app.slots.settingsSection({
+    id: "glass-sidebar-settings",
+    component: SidebarSettings,
+  });
 });

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 const appSource = await readFile(path.join(root, "app.tsx"), "utf8");
+const serverSource = await readFile(path.join(root, "server.ts"), "utf8");
 const appBundle = await readFile(path.join(root, "dist/app.js"), "utf8");
 const serverBundle = await readFile(path.join(root, "dist/server.js"), "utf8");
 
@@ -67,9 +68,19 @@ test("setInterval is confined to the two budgeted frontend owners", async () => 
 });
 
 test("source uses named Hugeicons catalog imports only", async () => {
-  for (const filename of await sourceFiles(path.join(root, "src"))) {
+  const filenames = [
+    path.join(root, "app.tsx"),
+    path.join(root, "server.ts"),
+    ...(await sourceFiles(path.join(root, "src"))),
+  ];
+  for (const filename of filenames) {
     if (!/\.(?:ts|tsx)$/.test(filename)) continue;
-    const source = await readFile(filename, "utf8");
+    const source =
+      filename === path.join(root, "app.tsx")
+        ? appSource
+        : filename === path.join(root, "server.ts")
+          ? serverSource
+          : await readFile(filename, "utf8");
     assert.doesNotMatch(
       source,
       /import\s+\*\s+as\s+\w+\s+from\s+["']@hugeicons\/core-free-icons["']/,

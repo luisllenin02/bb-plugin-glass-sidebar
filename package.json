@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-glass-sidebar",
-  "version": "0.1.0",
+  "version": "1.0.0-rc.1",
   "type": "module",
   "description": "Session management for bb: unmistakable focused / split / idle rows, folders with colours and drag and drop, a live strip of open panes and running work, project glyphs and colours, all without background polling.",
   "license": "MIT",
@@ -30,7 +30,10 @@
     "server.ts",
     "src/",
     "assets/",
+    "docs/",
     "README.md",
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md",
     "LICENSE"
   ],
   "dependencies": {

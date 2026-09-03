@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import type Database from "better-sqlite3";
@@ -52,6 +53,46 @@ import {
   SIDEBAR_SETTINGS_CHANNEL,
   type SidebarSettingsValues,
 } from "./src/sidebar-settings";
+import {
+  changedImportTables,
+  formatImportReport,
+  importDataDir,
+  importGlassSidebarData,
+  importSourcePaths,
+} from "./src/import-data";
+
+const CLI_USAGE = `Usage:
+  bb glass-sidebar import [--dry-run] [--force] [--from <dataDir>]
+  bb glass-sidebar help`;
+
+function parseImportArguments(argv: string[]):
+  | {
+      ok: true;
+      options: { dryRun: boolean; force: boolean; from?: string };
+    }
+  | { ok: false; error: string } {
+  let dryRun = false;
+  let force = false;
+  let from: string | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--dry-run") {
+      dryRun = true;
+    } else if (argument === "--force") {
+      force = true;
+    } else if (argument === "--from") {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("--")) {
+        return { ok: false, error: "--from requires a data directory" };
+      }
+      from = value;
+      index += 1;
+    } else {
+      return { ok: false, error: `Unknown import option "${argument}"` };
+    }
+  }
+  return { ok: true, options: { dryRun, force, ...(from ? { from } : {}) } };
+}
 
 const idSchema = z.string().trim().min(1);
 const nameSchema = z.string().trim().min(1).max(80);
@@ -438,7 +479,7 @@ export const glassSidebarRpcContract = defineRpcContract({
   },
 });
 
-const migrations = [
+export const glassSidebarMigrations = [
   `CREATE TABLE IF NOT EXISTS thread_folders (
      id TEXT PRIMARY KEY, name TEXT NOT NULL,
      color_index INTEGER NOT NULL DEFAULT 0, custom_color TEXT,
@@ -497,6 +538,10 @@ const migrations = [
      CHECK (settled_override IN ('active','settled') OR settled_override IS NULL)`,
   `ALTER TABLE thread_lifecycle ADD COLUMN snoozed_until INTEGER`,
   `ALTER TABLE thread_lifecycle ADD COLUMN snoozed_at INTEGER`,
+  `CREATE TABLE IF NOT EXISTS legacy_import_state (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     completed_at INTEGER NOT NULL
+   )`,
 ];
 
 /** The fork's five fields: what every reader and Q7's import work with. */
@@ -730,7 +775,13 @@ export default async function plugin(bb: BbPluginApi) {
       readonly: true,
       fileMustExist: true,
     });
-  bb.storage.migrate(db, migrations);
+  bb.storage.migrate(db, glassSidebarMigrations);
+  const defaultImportPaths = importSourcePaths(importDataDir(db.name, dataDir));
+  let awaitingLegacyImport =
+    !db.prepare(`SELECT 1 FROM legacy_import_state WHERE id = 1`).get() &&
+    (existsSync(defaultImportPaths.sidebar) ||
+      existsSync(defaultImportPaths.projectIcons));
+  let firstProjectDecorRead = true;
   const projectDecorStore = createProjectDecorStore(db);
   const projectSuggestions = new Map<string, AutoIconSuggestion>();
   bb.onDispose(() => closeWorkflowActivitySource(workflowSourcePath));
@@ -741,6 +792,77 @@ export default async function plugin(bb: BbPluginApi) {
   const publishProjectDecor = (reason: string) => {
     bb.realtime.publish("project-decor", { reason });
   };
+
+  bb.cli.register({
+    name: "glass-sidebar",
+    summary: "Import and manage Glass Sidebar data.",
+    commands: [
+      {
+        name: "import",
+        summary: "Copy bb-sidebar and Project Icons data into Glass Sidebar.",
+        usage:
+          "bb glass-sidebar import [--dry-run] [--force] [--from <dataDir>]",
+      },
+      {
+        name: "help",
+        summary: "Show Glass Sidebar command usage.",
+        usage: "bb glass-sidebar help",
+      },
+    ],
+    async run(argv) {
+      const [command, ...rest] = argv;
+      if (command === undefined || command === "help") {
+        return { exitCode: 0, stdout: CLI_USAGE };
+      }
+      if (command !== "import") {
+        return {
+          exitCode: 2,
+          stderr: `Unknown command "${command}".\n${CLI_USAGE}`,
+        };
+      }
+      const parsed = parseImportArguments(rest);
+      if (!parsed.ok) {
+        return { exitCode: 2, stderr: `${parsed.error}\n${CLI_USAGE}` };
+      }
+      const report = importGlassSidebarData({
+        destination: db,
+        dataDir: importDataDir(db.name, dataDir, parsed.options.from),
+        dryRun: parsed.options.dryRun,
+        force: parsed.options.force,
+      });
+      if (!report.dryRun) {
+        const changed = changedImportTables(report);
+        if (
+          changed.has("thread_folders") ||
+          changed.has("folder_members") ||
+          changed.has("thread_accents") ||
+          changed.has("project_accents")
+        ) {
+          publishOrganization("import");
+        }
+        if (changed.has("thread_lifecycle")) {
+          bb.realtime.publish(LIFECYCLE_CHANNEL, { reason: "import" });
+        }
+        if (changed.has("sidebar_settings")) {
+          bb.realtime.publish(SIDEBAR_SETTINGS_CHANNEL, { reason: "import" });
+        }
+        if (changed.has("inbox_order")) {
+          bb.realtime.publish(INBOX_ORDER_CHANNEL, { reason: "import" });
+        }
+        db.prepare(
+          `INSERT INTO legacy_import_state (id, completed_at) VALUES (1, ?)
+           ON CONFLICT(id) DO UPDATE SET completed_at = excluded.completed_at`,
+        ).run(Date.now());
+        awaitingLegacyImport = false;
+        const reconciled = await reconcileProjects("import");
+        firstProjectDecorRead = false;
+        if (changed.has("project_decor") && !reconciled.changed) {
+          publishProjectDecor("import");
+        }
+      }
+      return { exitCode: 0, stdout: formatImportReport(report) };
+    },
+  });
 
   const projectIconCache = new Map<
     string,
@@ -1104,8 +1226,6 @@ export default async function plugin(bb: BbPluginApi) {
       updatedAt: rows.reduce((latest, row) => Math.max(latest, row.updatedAt), 0),
     };
   };
-
-  let firstProjectDecorRead = true;
 
   const lifecycleColumns = `thread_id, settled_at, settled_override,
                             snoozed_until, snoozed_at`;
@@ -1547,7 +1667,7 @@ export default async function plugin(bb: BbPluginApi) {
       ),
     getOrganization: () => readOrganization(),
     getProjectDecor: async () => {
-      if (firstProjectDecorRead) {
+      if (firstProjectDecorRead && !awaitingLegacyImport) {
         firstProjectDecorRead = false;
         await reconcileProjects("getProjectDecor");
       }
@@ -2009,7 +2129,7 @@ export default async function plugin(bb: BbPluginApi) {
     }),
   });
 
-  await reconcileProjects("server-start");
+  if (!awaitingLegacyImport) await reconcileProjects("server-start");
 
   // Real work clears both kinds of manual settle override. The next quiet
   // period can then be judged against the current policies.

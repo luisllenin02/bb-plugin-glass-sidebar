@@ -78,10 +78,13 @@ test("hook seams preserve order and top-level assignment sites", () => {
     assert.ok(anchorIndex < renderIndex, `@${anchor} stays above renderActiveThread`);
 
     const assignment = `${binding} = ${hook}(`;
-    if (files.threadList.includes(assignment)) {
-      const afterAnchor = files.threadList.slice(anchorIndex + anchorText.length);
-      assert.match(afterAnchor, new RegExp(`^\\n  ${escapeRegExp(assignment)}`), `${binding} hook assignment immediately follows its anchor`);
-    }
+    assert.ok(files.threadList.includes(assignment), `${binding} landed hook assignment exists`);
+    const afterAnchor = files.threadList.slice(anchorIndex + anchorText.length);
+    assert.match(afterAnchor, new RegExp(`^\\n  ${escapeRegExp(assignment)}`), `${binding} hook assignment immediately follows its anchor`);
+    assert.ok(
+      files.threadList.indexOf(assignment) < renderIndex,
+      `${binding} hook assignment stays above renderActiveThread`,
+    );
   }
 
   for (const anchor of anchors.threadList.filter((id) => id.startsWith("rows:"))) {

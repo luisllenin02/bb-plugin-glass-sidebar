@@ -149,3 +149,15 @@ bb theme list
 - Validation: 30 Node contract tests, 62 Vitest tests, TypeScript typecheck,
   `bb plugin build`, and path install passed. Runtime reports
   `liquid-glass@0.5.9` running from the owned workspace.
+
+## Liquid Glass v0.5.10 — 2026-09-03
+
+- Fix: the running-thread follow-up composer footer now clears its host chrome
+  gradient, matching the transparent new-thread environment/permission row.
+- Release commit: `8ddda34`; tag `v0.5.10` on `main`.
+- GitHub release: https://github.com/luisllenin02/bb-plugin-liquid-glass/releases/tag/v0.5.10
+- The marketplace entry's `^0.5.4` range already includes this patch, so PR
+  #177 needs no metadata change.
+- Validation: 30 Node contract tests, 62 Vitest tests, TypeScript typecheck,
+  `bb plugin build`, and path install passed. Runtime reports
+  `liquid-glass@0.5.10` running from the owned workspace.

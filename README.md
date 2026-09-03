@@ -38,6 +38,14 @@ bb plugin build
 bb plugin install /home/system/workspaces/LAL/Development/bb-plugins/glass-sidebar --yes && bb plugin disable glass-sidebar
 ```
 
+For the released plugin, install it from the community marketplace or directly
+from the owned Git repository:
+
+```sh
+bb plugin install git:https://github.com/luisllenin02/bb-plugin-glass-sidebar.git@^1.0.0
+bb plugin install https://github.com/luisllenin02/bb-plugin-glass-sidebar
+```
+
 Only one `experimental_threadList` provider may be enabled. Follow the complete
 [switch-over and rollback runbook](docs/switchover.md) before enabling Glass
 Sidebar.

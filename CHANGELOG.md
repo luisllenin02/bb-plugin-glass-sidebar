@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.0 — 2026-09-03
+
+- First production release of the owned Glass Sidebar plugin.
+
 ## 1.0.0-rc.1 — 2026-09-03
 
 - Q1: ported focused/open/idle pane states, pane ordinals, accent rails, and

@@ -1,7 +1,22 @@
 {
   "name": "bb-plugin-glass-sidebar",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luisllenin02/bb-plugin-glass-sidebar.git"
+  },
+  "homepage": "https://github.com/luisllenin02/bb-plugin-glass-sidebar#readme",
+  "bugs": {
+    "url": "https://github.com/luisllenin02/bb-plugin-glass-sidebar/issues"
+  },
+  "keywords": [
+    "bb-plugin",
+    "sidebar",
+    "sessions",
+    "folders",
+    "glass"
+  ],
   "description": "Session management for bb: unmistakable focused / split / idle rows, folders with colours and drag and drop, a live strip of open panes and running work, project glyphs and colours, all without background polling.",
   "license": "MIT",
   "author": "Luis Llenin",

@@ -232,6 +232,7 @@ export function ThreadList({
       threads: hostThreads,
       projectName: projectNameById.get(thread.projectId) ?? null,
       isActive: thread.id === activeThreadId,
+      activeThreadId,
       onNavigate,
       now,
       // @rows:accent (Q2)

@@ -27,6 +27,7 @@ import type { WorkflowRun } from "./row-props";
 export function RelatedThreadTree({
   threads,
   parentThreadId,
+  activeThreadId = null,
   workflowRuns = [],
   now = Date.now(),
   onOpen,
@@ -36,6 +37,7 @@ export function RelatedThreadTree({
 }: {
   threads: readonly PluginSidebarThread[];
   parentThreadId: string;
+  activeThreadId?: string | null;
   workflowRuns?: readonly WorkflowRun[];
   now?: number;
   onOpen?: () => void;
@@ -67,6 +69,7 @@ export function RelatedThreadTree({
         <RelatedThreadNode
           key={node.thread.id}
           node={node}
+          activeThreadId={activeThreadId}
           workflowRuns={workflowRuns}
           now={now}
           onOpen={onOpen}
@@ -79,6 +82,7 @@ export function RelatedThreadTree({
 
 export function RelatedThreadNode({
   node,
+  activeThreadId = null,
   workflowRuns = [],
   now = Date.now(),
   onOpen,
@@ -86,6 +90,7 @@ export function RelatedThreadNode({
   projectIconsAvailable = false,
 }: {
   node: RelatedThreadTreeNode;
+  activeThreadId?: string | null;
   workflowRuns?: readonly WorkflowRun[];
   now?: number;
   onOpen?: () => void;
@@ -96,7 +101,10 @@ export function RelatedThreadNode({
   const { splitProps, layout } = useSidebarThreadSplit(node.thread.id);
   const [expanded, setExpanded] = useState(true);
   const title = threadDisplayTitle(node.thread);
-  const paneState = resolvePaneState(false, layout);
+  const paneState = resolvePaneState(
+    node.thread.id === activeThreadId,
+    layout,
+  );
   const nodeRuns = workflowRuns.filter(
     (run) => run.originThreadId === node.thread.id,
   );
@@ -180,6 +188,7 @@ export function RelatedThreadNode({
             <RelatedThreadNode
               key={child.thread.id}
               node={child}
+              activeThreadId={activeThreadId}
               workflowRuns={workflowRuns}
               now={now}
               onOpen={onOpen}

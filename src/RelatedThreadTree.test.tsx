@@ -80,9 +80,16 @@ function splitLayout(isFocused: boolean) {
   };
 }
 
-function renderNode(id: string, title: string) {
+function renderNode(
+  id: string,
+  title: string,
+  activeThreadId: string | null = null,
+) {
   render(
-    <RelatedThreadNode node={{ thread: thread(id, title), children: [] }} />,
+    <RelatedThreadNode
+      node={{ thread: thread(id, title), children: [] }}
+      activeThreadId={activeThreadId}
+    />,
   );
   return screen.getByRole("button", { name: title });
 }
@@ -95,6 +102,26 @@ afterEach(() => {
 });
 
 describe("RelatedThreadNode pane state", () => {
+  it("treats the route-active related child as focused without a split", () => {
+    const focused = renderNode(
+      "thr_active_child",
+      "Route-active child",
+      "thr_active_child",
+    );
+    const idle = renderNode("thr_idle_child", "Non-active child");
+
+    expect(focused.dataset.threadPaneState).toBe("focused");
+    expect(focused.className).toContain("bg-sidebar-accent");
+    expect(focused.className).toContain("ring-primary/60");
+    expect(
+      focused.querySelector('[data-accent-rail="focused"]'),
+    ).toBeTruthy();
+
+    expect(idle.dataset.threadPaneState).toBe("none");
+    expect(idle.className).toContain("hover:bg-sidebar-accent/60");
+    expect(idle.querySelector("[data-accent-rail]")).toBeNull();
+  });
+
   it("renders focused, open, and idle related rows as distinct surfaces", () => {
     splitRuntime.layouts.set("thr_focused", splitLayout(true));
     splitRuntime.layouts.set("thr_open", splitLayout(false));

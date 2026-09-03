@@ -71,6 +71,7 @@ export function ThreadCard({
   projectDecor,
   projectAccent,
   isActive,
+  activeThreadId = null,
   isSelected = false,
   isWoke = false,
   canPark = true,
@@ -97,6 +98,8 @@ export function ThreadCard({
   projectDecor?: ProjectDecorEntry | null;
   projectAccent?: string;
   isActive: boolean;
+  /** Route-active thread, including when that thread is a related child. */
+  activeThreadId?: string | null;
   isSelected?: boolean;
   /** A snooze ended and has not yet been acknowledged. */
   isWoke?: boolean;
@@ -424,6 +427,7 @@ export function ThreadCard({
             <RelatedThreadTree
               threads={threads ?? []}
               parentThreadId={thread.id}
+              activeThreadId={activeThreadId}
               workflowRuns={relatedWorkflowRuns}
               now={now}
               ariaLabel={`Related child threads for ${threadDisplayTitle(thread)}`}

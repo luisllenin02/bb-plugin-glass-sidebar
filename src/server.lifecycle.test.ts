@@ -58,7 +58,10 @@ function availablePullRequest(
 async function loadPlugin(
   options: {
     unpin?: (input: { threadId: string }) => Promise<unknown>;
-    threads?: () => Promise<unknown[]>;
+    threads?: (input?: {
+      limit?: number;
+      offset?: number;
+    }) => Promise<unknown[]>;
     pullRequest?: () => Promise<unknown>;
   } = {},
 ) {
@@ -668,6 +671,159 @@ describe("automatic settle evaluation", () => {
     } finally {
       clock.mockRestore();
     }
+  });
+
+  it("keeps the earliest of 10,001 explicit live holds through a scheduled sweep", async () => {
+    const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
+    const recent = Date.now();
+    const threads = Array.from({ length: 10_001 }, (_, index) =>
+      makeThreadResponse({
+        id: `thr_live_${index}`,
+        createdAt: index === 0 ? old : recent,
+        updatedAt: index === 0 ? old : recent,
+        latestAttentionAt: index === 0 ? old : recent,
+        status: "idle",
+      }),
+    );
+    const { harness, db } = await loadPlugin({
+      threads: async ({ limit = 500, offset = 0 } = {}) =>
+        threads.slice(offset, offset + limit),
+    });
+    const signals = threads.map((thread) => ({
+      threadId: thread.id,
+      hasPendingInteraction: true,
+      isWorking: false,
+    }));
+
+    // Each snapshot is schema-valid (the RPC caps one call at 10,000), and
+    // omitted ids retain their existing holds.
+    for (const chunk of [
+      signals.slice(0, 4_000),
+      signals.slice(4_000, 8_000),
+      signals.slice(8_000),
+    ]) {
+      await harness.behavior.callRpc("listLifecycle", { signals: chunk });
+    }
+
+    await harness.behavior.runSchedule("auto-settle");
+    expect(rawRows(db)).toEqual([]);
+    expect(lifecycleSignals(harness)).toEqual([]);
+  });
+
+  it("prunes live holds only when the host sweep proves the thread is gone", async () => {
+    const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
+    const thread = makeThreadResponse({
+      id: "thr_missing_then_reused",
+      createdAt: old,
+      updatedAt: old,
+      latestAttentionAt: old,
+      status: "idle",
+    });
+    let exists = true;
+    const { harness, db } = await loadPlugin({
+      threads: async () => (exists ? [thread] : []),
+    });
+
+    await harness.behavior.callRpc("listLifecycle", {
+      signals: [
+        {
+          threadId: thread.id,
+          hasPendingInteraction: true,
+          isWorking: false,
+        },
+      ],
+    });
+    exists = false;
+    await harness.behavior.runSchedule("auto-settle");
+    exists = true;
+    await harness.behavior.runSchedule("auto-settle");
+
+    expect(rawRows(db)).toEqual([
+      expect.objectContaining({
+        thread_id: thread.id,
+        state: "settled",
+      }),
+    ]);
+    expect(lifecycleSignals(harness)).toEqual([
+      { channel: "lifecycle", payload: { threadIds: [thread.id] } },
+    ]);
+  });
+
+  it("runs one immediate follow-up when a frozen live hold turns quiet", async () => {
+    const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
+    const thread = makeThreadResponse({
+      id: "thr_quiet_during_policy",
+      environmentId: "env_policy_gate",
+      createdAt: old,
+      updatedAt: old,
+      latestAttentionAt: old,
+      status: "idle",
+    });
+    let releasePolicy: () => void = () => {};
+    const policyGate = new Promise<void>((resolve) => {
+      releasePolicy = resolve;
+    });
+    let markDecisionReached: () => void = () => {};
+    const decisionReached = new Promise<void>((resolve) => {
+      markDecisionReached = resolve;
+    });
+    let pullRequestCalls = 0;
+    const { harness, db } = await loadPlugin({
+      threads: async () => [thread],
+      pullRequest: async () => {
+        pullRequestCalls += 1;
+        if (pullRequestCalls === 2) {
+          markDecisionReached();
+          await policyGate;
+        }
+        return availablePullRequest("merged");
+      },
+    });
+
+    await harness.behavior.callRpc("listLifecycle", {
+      signals: [
+        {
+          threadId: thread.id,
+          hasPendingInteraction: false,
+          isWorking: true,
+        },
+      ],
+    });
+    const sweep = harness.behavior.runSchedule("auto-settle");
+    await decisionReached;
+    const quiet = harness.behavior.callRpc("listLifecycle", {
+      signals: [
+        {
+          threadId: thread.id,
+          hasPendingInteraction: false,
+          isWorking: false,
+        },
+      ],
+    });
+    releasePolicy();
+    await Promise.all([sweep, quiet]);
+
+    expect(rawRows(db)).toEqual([
+      expect.objectContaining({
+        thread_id: thread.id,
+        state: "settled",
+      }),
+    ]);
+    expect(lifecycleSignals(harness)).toEqual([
+      { channel: "lifecycle", payload: { threadIds: [thread.id] } },
+    ]);
+    expect(pullRequestCalls).toBe(3);
+
+    await harness.behavior.callRpc("listLifecycle", {
+      signals: [
+        {
+          threadId: thread.id,
+          hasPendingInteraction: false,
+          isWorking: false,
+        },
+      ],
+    });
+    expect(lifecycleSignals(harness)).toHaveLength(1);
   });
 
   it("merges a client's live set into a sweep that is already in flight", async () => {

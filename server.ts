@@ -1370,39 +1370,50 @@ export default async function plugin(bb: BbPluginApi) {
    * park work the user is watching. The end signal is explicit — a quiet
    * report, or the thread's deletion.
    */
-  const MAX_LIVE_SIGNAL_ENTRIES = 10_000;
-  /** Thread ids a client has reported live and has not yet reported quiet.
-   * Insertion order is recency order, because every add deletes first. */
+  /** Thread ids a client has reported live and has not yet reported quiet. */
   const clientLiveThreadIds = new Set<string>();
+  /**
+   * Monotonic membership version. A policy pass freezes this beside its live
+   * set, then chains one fresh pass if any add or removal happened while its
+   * asynchronous host reads were still in flight.
+   */
+  let clientLiveGeneration = 0;
+
+  const setClientLive = (threadId: string, live: boolean): void => {
+    const changed = live
+      ? !clientLiveThreadIds.has(threadId)
+      : clientLiveThreadIds.has(threadId);
+    if (!changed) return;
+    if (live) clientLiveThreadIds.add(threadId);
+    else clientLiveThreadIds.delete(threadId);
+    clientLiveGeneration += 1;
+  };
 
   /**
-   * Applies one client's activity snapshot and returns the ids it called
-   * live. Threads the snapshot does not mention are left as they are: it is
+   * Applies one client's activity snapshot. Threads the snapshot does not
+   * mention are left as they are: it is
    * a snapshot of what that client renders, not of every thread that exists,
    * and another client may be the one watching the rest.
    */
   const recordActivitySignals = (
     signals: readonly LiveSignal[],
-  ): Set<string> => {
-    const live = new Set<string>();
+  ): void => {
     for (const signal of signals) {
-      if (signal.live) {
-        live.add(signal.threadId);
-        clientLiveThreadIds.delete(signal.threadId);
-        clientLiveThreadIds.add(signal.threadId);
-      } else {
-        clientLiveThreadIds.delete(signal.threadId);
-      }
+      setClientLive(signal.threadId, signal.live);
     }
-    // A bound on memory, not a policy. Only a client holding ten thousand
-    // simultaneously live threads, none of which it ever reports quiet, can
-    // reach it; the least recently reported goes first.
-    while (clientLiveThreadIds.size > MAX_LIVE_SIGNAL_ENTRIES) {
-      const oldest = clientLiveThreadIds.values().next();
-      if (oldest.done) break;
-      clientLiveThreadIds.delete(oldest.value);
+  };
+
+  /**
+   * The host list is authoritative for existence. This is the only memory
+   * bound: never discard a live hold merely because it is old or because many
+   * other threads are also live.
+   */
+  const pruneMissingClientLiveThreads = (
+    existingThreadIds: ReadonlySet<string>,
+  ): void => {
+    for (const threadId of clientLiveThreadIds) {
+      if (!existingThreadIds.has(threadId)) setClientLive(threadId, false);
     }
-    return live;
   };
 
   /**
@@ -1428,37 +1439,32 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   let policyEvaluation: Promise<string[]> | null = null;
-  /** The live set the in-flight pass actually decided against, frozen at its
-   * decision point so a later caller can tell whether it was covered. */
-  let policyEvaluationLive: Set<string> | null = null;
-  let policyEvaluationDecided = false;
+  /** Membership generation represented by the in-flight decision's live set. */
+  let policyDecisionGeneration: number | null = null;
   /**
    * Idempotent: it publishes at most once, and only when it changed state, so
    * a refresh triggered by its own signal cannot loop. Concurrent callers
    * coalesce onto one pass, which is what keeps a freshly opened client from
-   * repeating the thread and PR work — but only when that pass honoured their
-   * live work. A caller reporting live threads the in-flight pass had already
-   * decided without chains a fresh pass instead of inheriting its answer.
+   * repeating the thread and PR work. If client-live membership changes after
+   * the pass freezes its decision set, the stale pass applies nothing and its
+   * promise chains exactly one fresh pass derived from current state.
    */
   const evaluatePolicies = (
     signals: readonly LiveSignal[] = [],
   ): Promise<string[]> => {
-    const liveThreadIds = recordActivitySignals(signals);
-    if (policyEvaluation !== null) {
-      const inFlight = policyEvaluation;
-      const missed =
-        policyEvaluationDecided &&
-        [...liveThreadIds].some(
-          (threadId) => policyEvaluationLive?.has(threadId) !== true,
-        );
-      if (!missed) return inFlight;
-      return inFlight.then(() => evaluatePolicies(signals));
-    }
-    policyEvaluationLive = new Set(liveThreadIds);
-    policyEvaluationDecided = false;
-    policyEvaluation = (async () => {
+    recordActivitySignals(signals);
+    if (policyEvaluation !== null) return policyEvaluation;
+
+    const pass = (async () => {
       const configured = readAutoSettleSettings();
       const threads = await loadPolicyThreads();
+      pruneMissingClientLiveThreads(
+        new Set(threads.map((thread) => thread.id)),
+      );
+      // Freeze the live decision at the last point before the PR reads can
+      // yield. Any later client-live membership change invalidates this pass.
+      const live = liveThreadIdsNow(Date.now());
+      policyDecisionGeneration = clientLiveGeneration;
       const environmentIds = [
         ...new Set(
           threads.flatMap((thread) =>
@@ -1478,12 +1484,9 @@ export default async function plugin(bb: BbPluginApi) {
         ),
         onMerge: configured.autoSettleOnMerge,
       };
-      // Read the live set here, not at call time: the scheduled sweep passes
-      // none of its own, and a client that reported live work while the thread
-      // and PR reads were in flight must still be honoured.
-      const live = policyEvaluationLive ?? new Set<string>();
-      for (const threadId of liveThreadIdsNow(now)) live.add(threadId);
-      policyEvaluationDecided = true;
+      // Never apply a decision against a stale live set. The completion chain
+      // below immediately evaluates current membership exactly once.
+      if (policyDecisionGeneration !== clientLiveGeneration) return [];
       const changes = threads.flatMap((thread) => {
         if (live.has(thread.id)) return [];
         const row = lifecycleByThreadId.get(thread.id) ?? null;
@@ -1508,10 +1511,22 @@ export default async function plugin(bb: BbPluginApi) {
       const changedThreadIds = changes.map((change) => change.threadId);
       bb.realtime.publish(LIFECYCLE_CHANNEL, { threadIds: changedThreadIds });
       return changedThreadIds;
-    })().finally(() => {
+    })();
+    policyEvaluation = pass.then(async (changedThreadIds) => {
+      const needsFollowUp =
+        policyDecisionGeneration !== null &&
+        policyDecisionGeneration !== clientLiveGeneration;
       policyEvaluation = null;
-      policyEvaluationLive = null;
-      policyEvaluationDecided = false;
+      policyDecisionGeneration = null;
+      if (!needsFollowUp) return changedThreadIds;
+      const followUpChangedThreadIds = await evaluatePolicies();
+      return [
+        ...new Set([...changedThreadIds, ...followUpChangedThreadIds]),
+      ];
+    }, (error: unknown) => {
+      policyEvaluation = null;
+      policyDecisionGeneration = null;
+      throw error;
     });
     return policyEvaluation;
   };
@@ -2012,7 +2027,7 @@ export default async function plugin(bb: BbPluginApi) {
         .run(thread.id);
       const lifecycle = deleteLifecycle.run(thread.id);
       // The other way a live signal ends: the thread it protects is gone.
-      clientLiveThreadIds.delete(thread.id);
+      setClientLive(thread.id, false);
       return {
         organization: membership.changes + accent.changes,
         lifecycle: lifecycle.changes,

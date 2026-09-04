@@ -1,6 +1,7 @@
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin, { type StoredLifecycleRow } from "../server";
+import { DEFAULT_SIDEBAR_SETTINGS } from "./sidebar-settings";
 import { legacyLifecycleColumns } from "./lifecycle";
 
 interface LifecycleListResult {
@@ -751,14 +752,21 @@ describe("automatic settle evaluation", () => {
 
   it("runs one immediate follow-up when a frozen live hold turns quiet", async () => {
     const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
-    const thread = makeThreadResponse({
-      id: "thr_quiet_during_policy",
-      environmentId: "env_policy_gate",
-      createdAt: old,
-      updatedAt: old,
-      latestAttentionAt: old,
-      status: "idle",
-    });
+    const threadId = "thr_quiet_during_policy";
+    // The gate below is the pull-request read, and the server now holds one
+    // result per environment for a minute — so each pass reports a fresh
+    // environment id, which is what keeps every pass doing the lookup this
+    // test synchronises on. Nothing else about the scenario changes.
+    let passCount = 0;
+    const threadForPass = () =>
+      makeThreadResponse({
+        id: threadId,
+        environmentId: `env_policy_gate_${(passCount += 1)}`,
+        createdAt: old,
+        updatedAt: old,
+        latestAttentionAt: old,
+        status: "idle",
+      });
     let releasePolicy: () => void = () => {};
     const policyGate = new Promise<void>((resolve) => {
       releasePolicy = resolve;
@@ -769,7 +777,7 @@ describe("automatic settle evaluation", () => {
     });
     let pullRequestCalls = 0;
     const { harness, db } = await loadPlugin({
-      threads: async () => [thread],
+      threads: async () => [threadForPass()],
       pullRequest: async () => {
         pullRequestCalls += 1;
         if (pullRequestCalls === 2) {
@@ -783,7 +791,7 @@ describe("automatic settle evaluation", () => {
     await harness.behavior.callRpc("listLifecycle", {
       signals: [
         {
-          threadId: thread.id,
+          threadId,
           hasPendingInteraction: false,
           isWorking: true,
         },
@@ -794,7 +802,7 @@ describe("automatic settle evaluation", () => {
     const quiet = harness.behavior.callRpc("listLifecycle", {
       signals: [
         {
-          threadId: thread.id,
+          threadId,
           hasPendingInteraction: false,
           isWorking: false,
         },
@@ -805,25 +813,270 @@ describe("automatic settle evaluation", () => {
 
     expect(rawRows(db)).toEqual([
       expect.objectContaining({
-        thread_id: thread.id,
+        thread_id: threadId,
         state: "settled",
       }),
     ]);
     expect(lifecycleSignals(harness)).toEqual([
-      { channel: "lifecycle", payload: { threadIds: [thread.id] } },
+      { channel: "lifecycle", payload: { threadIds: [threadId] } },
     ]);
     expect(pullRequestCalls).toBe(3);
 
     await harness.behavior.callRpc("listLifecycle", {
       signals: [
         {
-          threadId: thread.id,
+          threadId,
           hasPendingInteraction: false,
           isWorking: false,
         },
       ],
     });
     expect(lifecycleSignals(harness)).toHaveLength(1);
+  });
+
+  it("answers repeated lists from stored rows without re-paging threads or pull requests", async () => {
+    // The client re-reads on every thread-list revision, which ticks
+    // continuously while an agent streams. Only the first read may pay for a
+    // full pass; the rest are one table read.
+    const recent = Date.now();
+    const { harness } = await loadPlugin({
+      threads: async () => [
+        makeThreadResponse({
+          id: "thr_busy",
+          environmentId: "env_busy",
+          createdAt: recent,
+          updatedAt: recent,
+          latestAttentionAt: recent,
+          status: "idle",
+        }),
+      ],
+      pullRequest: async () => availablePullRequest("open"),
+    });
+    await harness.behavior.callRpc("settle", { threadId: "thr_parked" });
+    const signals = [
+      {
+        threadId: "thr_busy",
+        hasPendingInteraction: false,
+        isWorking: false,
+      },
+    ];
+
+    await harness.behavior.callRpc("listLifecycle", { signals });
+    const threadPages = harness.inspection.sdk.callsTo("threads.list").length;
+    const pullRequests = harness.inspection.sdk.callsTo(
+      "environments.pullRequest",
+    ).length;
+    expect(threadPages).toBeGreaterThan(0);
+    expect(pullRequests).toBe(1);
+
+    for (let revision = 0; revision < 5; revision += 1) {
+      await expect(
+        harness.behavior.callRpc("listLifecycle", { signals }),
+      ).resolves.toEqual({
+        rows: [expect.objectContaining({ threadId: "thr_parked" })],
+      });
+    }
+    expect(harness.inspection.sdk.callsTo("threads.list")).toHaveLength(
+      threadPages,
+    );
+    expect(
+      harness.inspection.sdk.callsTo("environments.pullRequest"),
+    ).toHaveLength(pullRequests);
+  });
+
+  it("still records a live hold on a list that runs no pass", async () => {
+    // The answer may come from stored rows, but the report inside it is the
+    // only place a live hold is taken, so it must land either way.
+    const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
+    const { harness, db } = await loadPlugin({
+      threads: async () => [
+        makeThreadResponse({
+          id: "thr_late_live",
+          createdAt: old,
+          updatedAt: old,
+          latestAttentionAt: old,
+          status: "idle",
+        }),
+      ],
+    });
+
+    // The first list pays for the pass — nothing is live yet, so it settles.
+    await harness.behavior.callRpc("listLifecycle", {});
+    await harness.behavior.callRpc("unsettle", { threadId: "thr_late_live" });
+    await harness.behavior.emitThreadEvent("thread.active", {
+      thread: makeThreadResponse({ id: "thr_late_live" }),
+    });
+    await harness.behavior.callRpc("listLifecycle", {});
+    expect(rawRows(db)).toHaveLength(1);
+    const threadPages = harness.inspection.sdk.callsTo("threads.list").length;
+
+    // A thread going live cannot park anything, so this list runs no pass —
+    // and must still remember the hold for the sweep that follows.
+    await harness.behavior.callRpc("listLifecycle", {
+      signals: [
+        {
+          threadId: "thr_late_live",
+          hasPendingInteraction: false,
+          isWorking: true,
+        },
+      ],
+    });
+    expect(harness.inspection.sdk.callsTo("threads.list")).toHaveLength(
+      threadPages,
+    );
+
+    await harness.behavior.callRpc("unsettle", { threadId: "thr_late_live" });
+    await harness.behavior.emitThreadEvent("thread.active", {
+      thread: makeThreadResponse({ id: "thr_late_live" }),
+    });
+    await harness.behavior.runSchedule("auto-settle");
+    expect(rawRows(db)).toEqual([]);
+
+    // Releasing the hold re-evaluates immediately, inside the same cadence
+    // window, and answers with the row it just wrote.
+    await expect(
+      harness.behavior.callRpc("listLifecycle", {
+        signals: [
+          {
+            threadId: "thr_late_live",
+            hasPendingInteraction: false,
+            isWorking: false,
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      rows: [
+        expect.objectContaining({
+          threadId: "thr_late_live",
+          settledAt: expect.any(Number),
+        }),
+      ],
+    });
+  });
+
+  it("sweeps on the schedule even when a list would be inside the cadence", async () => {
+    const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
+    const recent = Date.now();
+    let stale = false;
+    const { harness, db } = await loadPlugin({
+      threads: async () => [
+        makeThreadResponse({
+          id: "thr_cadence",
+          createdAt: stale ? old : recent,
+          updatedAt: stale ? old : recent,
+          latestAttentionAt: stale ? old : recent,
+          status: "idle",
+        }),
+      ],
+    });
+
+    await harness.behavior.callRpc("listLifecycle", {});
+    expect(rawRows(db)).toEqual([]);
+    stale = true;
+    const threadPages = harness.inspection.sdk.callsTo("threads.list").length;
+
+    // Inside the cadence a plain revision changes nothing and costs nothing.
+    await expect(
+      harness.behavior.callRpc("listLifecycle", {}),
+    ).resolves.toEqual({ rows: [] });
+    expect(harness.inspection.sdk.callsTo("threads.list")).toHaveLength(
+      threadPages,
+    );
+
+    // The schedule is never throttled.
+    await harness.behavior.runSchedule("auto-settle");
+    expect(
+      rawRows(db).map((row) => ({ id: row.thread_id, state: row.state })),
+    ).toEqual([{ id: "thr_cadence", state: "settled" }]);
+    expect(lifecycleSignals(harness)).toEqual([
+      { channel: "lifecycle", payload: { threadIds: ["thr_cadence"] } },
+    ]);
+  });
+
+  it("refreshes in the background once the cadence has elapsed", async () => {
+    const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
+    const recent = Date.now();
+    let stale = false;
+    const { harness, db } = await loadPlugin({
+      threads: async () => [
+        makeThreadResponse({
+          id: "thr_ttl",
+          createdAt: stale ? old : recent,
+          updatedAt: stale ? old : recent,
+          latestAttentionAt: stale ? old : recent,
+          status: "idle",
+        }),
+      ],
+    });
+
+    await harness.behavior.callRpc("listLifecycle", {});
+    expect(rawRows(db)).toEqual([]);
+    stale = true;
+
+    // Five minutes on: the read-driven cadence must have elapsed by now.
+    const realNow = Date.now;
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockImplementation(() => realNow() + 5 * 60_000);
+    try {
+      // The answer is the stored rows — the pass does not block it — and the
+      // settle it makes reaches the client on LIFECYCLE_CHANNEL.
+      await expect(
+        harness.behavior.callRpc("listLifecycle", {}),
+      ).resolves.toEqual({ rows: [] });
+      await vi.waitFor(() =>
+        expect(
+          rawRows(db).map((row) => ({ id: row.thread_id, state: row.state })),
+        ).toEqual([{ id: "thr_ttl", state: "settled" }]),
+      );
+      expect(lifecycleSignals(harness)).toEqual([
+        { channel: "lifecycle", payload: { threadIds: ["thr_ttl"] } },
+      ]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("re-evaluates on the next read after a settings change", async () => {
+    const old = Date.now() - 4 * 24 * 60 * 60 * 1_000;
+    const { harness, db } = await loadPlugin({
+      threads: async () => [
+        makeThreadResponse({
+          id: "thr_settings",
+          createdAt: old,
+          updatedAt: old,
+          latestAttentionAt: old,
+          status: "idle",
+        }),
+      ],
+    });
+    await harness.behavior.callRpc("updateSidebarSettings", {
+      ...DEFAULT_SIDEBAR_SETTINGS,
+      autoSettleInactive: false,
+      autoSettleOnMerge: false,
+    });
+
+    await harness.behavior.callRpc("listLifecycle", {});
+    expect(rawRows(db)).toEqual([]);
+
+    // Turning the policy on must take effect on the next read, not at the end
+    // of the read cadence.
+    await harness.behavior.callRpc("updateSidebarSettings", {
+      ...DEFAULT_SIDEBAR_SETTINGS,
+      autoSettleInactive: true,
+      autoSettleAfterDays: 1,
+      autoSettleOnMerge: false,
+    });
+    await expect(
+      harness.behavior.callRpc("listLifecycle", {}),
+    ).resolves.toEqual({
+      rows: [
+        expect.objectContaining({
+          threadId: "thr_settings",
+          settledAt: expect.any(Number),
+        }),
+      ],
+    });
   });
 
   it("merges a client's live set into a sweep that is already in flight", async () => {

@@ -47,11 +47,20 @@ export function usePinnedReorder(
     () => orderPinnedThreads(pinnedThreads, optimistic?.ids ?? null),
     [optimistic, pinnedThreads],
   );
-  const ids = orderedThreads.map((thread) => thread.id);
+  const ids = useMemo(
+    () => orderedThreads.map((thread) => thread.id),
+    [orderedThreads],
+  );
+  // Read through a ref so `reorder` — and the API object built on it — does
+  // not get a new identity on every render just to see the current order.
+  const idsRef = useRef(ids);
+  idsRef.current = ids;
 
   const reorder = useCallback(
     async (nextIds: readonly string[], movingId: string): Promise<boolean> => {
-      if (inFlight.current || orderKey(nextIds) === orderKey(ids)) return false;
+      if (inFlight.current || orderKey(nextIds) === orderKey(idsRef.current)) {
+        return false;
+      }
       const neighbors = pinnedNeighbors(nextIds, movingId);
       inFlight.current = true;
       setIsReordering(true);
@@ -75,8 +84,12 @@ export function usePinnedReorder(
         setIsReordering(false);
       }
     },
-    [baseKey, ids, rpc],
+    [baseKey, rpc],
   );
 
-  return { threads: orderedThreads, ids, isReordering, reorder };
+  // One object per real change: `useShelfReorder` memoises its controls on it.
+  return useMemo(
+    () => ({ threads: orderedThreads, ids, isReordering, reorder }),
+    [ids, isReordering, orderedThreads, reorder],
+  );
 }

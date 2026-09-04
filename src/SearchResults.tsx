@@ -117,7 +117,10 @@ export function SearchResults({
         }
       }}
     >
-      {threads.map((thread, index) => (
+      {threads.map((thread, index) => {
+        // One resolution per row: `accentFor` answers both props at once.
+        const resolvedAccent = accentFor?.(thread);
+        return (
         <SearchResultRow
           key={thread.id}
           thread={thread}
@@ -128,8 +131,8 @@ export function SearchResults({
           )}
           projectDecor={decorFor?.(thread.projectId)}
           projectAccent={projectAccentFor?.(thread.projectId).css}
-          accent={accentFor?.(thread).css}
-          accentSource={accentFor?.(thread).source}
+          accent={resolvedAccent?.css}
+          accentSource={resolvedAccent?.source}
           isActive={thread.id === activeThreadId}
           isHighlighted={highlightedIndex === index}
           isSelected={selectedThreadIds.has(thread.id)}
@@ -143,7 +146,8 @@ export function SearchResults({
           onSelectionClick={(event) => onSelectionClick(thread.id, event)}
           onNavigate={onNavigate}
         />
-      ))}
+        );
+      })}
     </ul>
   );
 }

@@ -2,6 +2,7 @@
 // Insert content immediately after your own anchor.
 // Never edit, move, or reorder another packet's anchor.
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -18,8 +19,9 @@ import {
   useRealtime,
 } from "@get-bb/plugin-sdk/app";
 import { Icon } from "./components/Icon";
+import { TooltipProvider } from "./components/Tooltip";
 import { cn } from "./lib/utils";
-import { ThreadCard } from "./ThreadCard";
+import { ThreadCard, type ThreadReorderControls } from "./ThreadCard";
 import { SlimRow } from "./SlimRow";
 import { SearchResults } from "./SearchResults";
 import { LiveStrip } from "./LiveStrip";
@@ -28,7 +30,7 @@ import { TRAILING_GLYPH_BOX_CLASS } from "./StatusSlot";
 import { FolderShelf } from "./FolderShelf";
 import { partitionByFolder } from "./folder-list";
 import { useFolderDrag } from "./useFolderDrag";
-import { useOrganization } from "./useOrganization";
+import { useOrganization, type AccentSourceResolver } from "./useOrganization";
 import { useShelfReorder } from "./useShelfReorder";
 import { accentCss } from "./accent";
 import {
@@ -44,7 +46,11 @@ import {
 import { isInactiveThread, parseInactiveAfterHours } from "./inactive";
 import { parseConfiguredSnoozePresets } from "./lifecycle";
 import { useLifecycle } from "./useLifecycle";
-import type { ConfiguredSnoozePreset } from "./row-props";
+import type {
+  ConfiguredSnoozePreset,
+  ProjectDecorEntry,
+  WorkflowRun,
+} from "./row-props";
 import {
   DEFAULT_SETTINGS_ACCESS,
   DEFAULT_SIDEBAR_SETTINGS,
@@ -85,8 +91,13 @@ import {
   isActiveSortMode,
   readActiveSort,
   sortActiveThreads,
+  visibleShelfThreads,
   type ActiveThreadGroup,
 } from "./active-sorting";
+
+/** Shared by every row without descendants, and by every row without runs. */
+const NO_RELATED_THREADS: readonly PluginSidebarThread[] = Object.freeze([]);
+const NO_WORKFLOW_RUNS: readonly WorkflowRun[] = Object.freeze([]);
 
 /** Q5 paging: the Settled shelf is unbounded, so it opens on a window. */
 const SETTLED_INITIAL_LIMIT = 10;
@@ -100,6 +111,31 @@ interface ShelfExpansionState {
   inactive: boolean;
   snoozed: boolean;
   settled: boolean;
+}
+
+/**
+ * The half of a row's props that must never change identity for its own sake:
+ * the four row handlers and the reorder controls. Built once per thread by
+ * `rowBindingsFor` and re-pointed, not re-created, as the list changes.
+ */
+interface RowBindings {
+  /** The freshest controls, read by the delegating drag handlers. */
+  latest: ThreadReorderControls;
+  reorder: ThreadReorderControls;
+  onSettle: () => void;
+  onSnooze: (snoozedUntil: number) => void;
+  onAcknowledgeWake: () => void;
+  onSelectionClick: (event: ReactMouseEvent<HTMLAnchorElement>) => boolean;
+}
+
+interface RowActions {
+  settle: (threadId: string, projectId: string) => void;
+  snooze: (threadId: string, projectId: string, snoozedUntil: number) => void;
+  acknowledgeWake: (threadId: string) => void;
+  selectionClick: (
+    threadId: string,
+    event: ReactMouseEvent<HTMLAnchorElement>,
+  ) => boolean;
 }
 
 export type ActiveShelfKind = "pinned" | "inbox";
@@ -141,23 +177,6 @@ function readShelfExpansion(): ShelfExpansionState {
 }
 
 /**
- * A collapsed shelf shows nothing but its count — except the thread you are
- * actually looking at, which stays reachable wherever it was filed.
- */
-function visibleShelfThreads(
-  threads: readonly PluginSidebarThread[],
-  expanded: boolean,
-  activeThreadId: string | null,
-  limit = threads.length,
-): PluginSidebarThread[] {
-  const activeThread = threads.find((thread) => thread.id === activeThreadId);
-  if (!expanded) return activeThread ? [activeThread] : [];
-  return threads.filter(
-    (thread, index) => index < limit || thread.id === activeThreadId,
-  );
-}
-
-/**
  * True once `getSidebarSettings` has actually answered (or a cached answer was
  * available). The fork holds its settings at `null` until then, so neither the
  * Inactive tier nor auto project colours acts on a guess during first paint —
@@ -183,15 +202,41 @@ export function ThreadList({
   // own anchor and assigns the binding declared directly above it. The defaults keep this file
   // correct before those packets land. Hooks go here and nowhere else in
   // this file — never inside renderActiveThread or any row loop.
+  // The accent inputs the resolver needs, read through a ref so the resolver
+  // keeps one identity for the life of the mount. `useOrganization` rebuilds
+  // `accentFor`, `accentSourceFor` and `projectAccentFor` whenever this
+  // callback changes, so a fresh closure per render would hand every row new
+  // accent functions — and a new `organization` — on every tick and push.
+  // The values are published below, before anything asks for a colour.
+  const accentInputs = useRef<{
+    decor: Readonly<Record<string, ProjectDecorEntry>>;
+    settingsLoaded: boolean;
+    autoProjectColours: boolean | undefined;
+  }>({
+    decor: EMPTY_DECOR_ACCESS.projects,
+    settingsLoaded: false,
+    autoProjectColours: undefined,
+  });
+  const resolveRowAccentSource = useCallback<AccentSourceResolver>(
+    (threadId, projectId, current, options) =>
+      resolveAccentSource(
+        threadId,
+        projectId,
+        current,
+        accentInputs.current.decor,
+        {
+          autoProjectColours: accentInputs.current.settingsLoaded
+            ? (accentInputs.current.autoProjectColours ??
+              options.autoProjectColours)
+            : false,
+        },
+      ),
+    [],
+  );
   let organization: OrganizationAccess = EMPTY_ORGANIZATION_ACCESS;
   // @hooks:organization (Q2)
   organization = useOrganization({
-    resolveAccentSource: (threadId, projectId, current, options) =>
-      resolveAccentSource(threadId, projectId, current, decor.projects, {
-        autoProjectColours: sidebarSettingsLoaded(settings)
-          ? (settings.autoProjectColours ?? options.autoProjectColours)
-          : false,
-      }),
+    resolveAccentSource: resolveRowAccentSource,
   });
   let workflow: WorkflowAccess = EMPTY_WORKFLOW_ACCESS;
   // @hooks:workflow (Q3)
@@ -205,11 +250,23 @@ export function ThreadList({
   let settings: SettingsAccess = DEFAULT_SETTINGS_ACCESS;
   // @hooks:settings-selection (Q6)
   settings = useSidebarSettings();
+  accentInputs.current = {
+    decor: decor.projects,
+    settingsLoaded: sidebarSettingsLoaded(settings),
+    autoProjectColours: settings.autoProjectColours,
+  };
   const [selection, setSelection] = useState<ThreadSelectionState>(
     EMPTY_THREAD_SELECTION,
   );
   const activeThreadIdRef = useRef(activeThreadId);
   activeThreadIdRef.current = activeThreadId;
+  const rowActions = useRef<RowActions>({
+    settle: () => {},
+    snooze: () => {},
+    acknowledgeWake: () => {},
+    selectionClick: () => false,
+  });
+  const rowBindings = useRef(new Map<string, RowBindings>());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [scope, setScope] = useState(ALL_PROJECTS);
   const [activeSortMode, setActiveSortMode] = useState(readActiveSort);
@@ -227,8 +284,12 @@ export function ThreadList({
 
   // Q5 lifecycle inputs, derived from the settings binding above. Plain
   // derivations, never hooks: the one lifecycle hook lives at its anchor.
-  const snoozePresets: readonly ConfiguredSnoozePreset[] =
-    parseConfiguredSnoozePresets(settings.snoozePresets);
+  const snoozePresets: readonly ConfiguredSnoozePreset[] = useMemo(
+    // Parsed once per settings change, not once per render: the array is a
+    // prop on every card and on the bulk bar.
+    () => parseConfiguredSnoozePresets(settings.snoozePresets),
+    [settings.snoozePresets],
+  );
   const inactiveAfterHours = parseInactiveAfterHours(
     sidebarSettingsLoaded(settings) && settings.inactiveThreadsEnabled,
     String(settings.inactiveAfterHours),
@@ -280,8 +341,65 @@ export function ThreadList({
           scope === ALL_PROJECTS ? null : scope,
         ),
       ),
-    [hostThreads, scope, workflow],
+    // `workflow` is a fresh object every render; `runsFor` is the stable part
+    // of it, and re-running this whole pipeline per render is not free.
+    [hostThreads, scope, workflow.runsFor],
   );
+  // Every card needs the threads it can reach — its own descendants, for the
+  // related-children chip and tree — and nothing else. Indexing them once
+  // here replaces one descendant walk over the whole array per row (O(n²) on
+  // every host push) with one pass, and hands a childless row the same frozen
+  // empty array every time, so its props stop churning.
+  const descendantsByThread = useMemo(() => {
+    const childrenByParent = new Map<string, PluginSidebarThread[]>();
+    for (const thread of hostThreads) {
+      const parentThreadId = thread.parentThreadId;
+      if (parentThreadId === null) continue;
+      const siblings = childrenByParent.get(parentThreadId);
+      if (siblings) siblings.push(thread);
+      else childrenByParent.set(parentThreadId, [thread]);
+    }
+    const descendants = new Map<string, readonly PluginSidebarThread[]>();
+    for (const parentThreadId of childrenByParent.keys()) {
+      const collected: PluginSidebarThread[] = [];
+      const seen = new Set<string>([parentThreadId]);
+      const queue: string[] = [parentThreadId];
+      while (queue.length > 0) {
+        for (const child of childrenByParent.get(queue.shift()!) ?? []) {
+          if (seen.has(child.id)) continue;
+          seen.add(child.id);
+          collected.push(child);
+          queue.push(child.id);
+        }
+      }
+      descendants.set(parentThreadId, collected);
+    }
+    return descendants;
+  }, [hostThreads]);
+  // The run list only changes when a run does. Without this the whole array —
+  // a prop on every card — is a new identity on every workflow refresh.
+  const workflowRunsKey = workflow.runs
+    .map((run) => `${run.id}:${run.status}:${run.phase ?? ""}`)
+    .join("\u001f");
+  // Keyed by content on purpose: the array is the value, the key is the test.
+  const workflowRuns = useMemo(() => workflow.runs, [workflowRunsKey]);
+  // A card only ever draws the runs of itself and its descendants, so it is
+  // given exactly those. Rows with none share one frozen array.
+  const relatedRunsByThread = useMemo(() => {
+    const byThread = new Map<string, readonly WorkflowRun[]>();
+    if (workflowRuns.length === 0) return byThread;
+    for (const thread of hostThreads) {
+      const relatedIds = new Set<string>([thread.id]);
+      for (const descendant of descendantsByThread.get(thread.id) ?? []) {
+        relatedIds.add(descendant.id);
+      }
+      const related = workflowRuns.filter((run) =>
+        relatedIds.has(run.originThreadId),
+      );
+      if (related.length > 0) byThread.set(thread.id, related);
+    }
+    return byThread;
+  }, [descendantsByThread, hostThreads, workflowRuns]);
   // Q5: parked rows leave every active shelf and every folder before anything
   // else is ordered, and come back to exactly where they were when they wake.
   const { activeThreads, snoozed, settled } = useMemo(() => {
@@ -316,6 +434,37 @@ export function ThreadList({
     () => searchThreadsByTitle(visibleThreads, searchQuery),
     [searchQuery, visibleThreads],
   );
+  const wokeSearchResultIds = useMemo(
+    () =>
+      new Set(
+        searchResults
+          .filter((thread) => lifecycle.wokeFor(thread))
+          .map((thread) => thread.id),
+      ),
+    [lifecycle, searchResults],
+  );
+
+  // `useOrganization` returns a new wrapper object every render even when every
+  // member inside it is unchanged. Rows take the whole object, so hold the
+  // identity for as long as its members hold theirs.
+  const rowOrganization = useMemo(
+    () => organization,
+    [
+      organization.status,
+      organization.folders,
+      organization.folderOf,
+      organization.accentFor,
+      organization.accentSourceFor,
+      organization.projectAccentFor,
+      organization.manualProjectAccentFor,
+      organization.actions,
+    ],
+  );
+  // The host's `onNavigate` identity is not ours to control, and it is a prop
+  // on every row.
+  const onNavigateRef = useRef(onNavigate);
+  onNavigateRef.current = onNavigate;
+  const navigate = useCallback(() => onNavigateRef.current(), []);
 
   // The folder shelf's "+ New thread" footer needs the host composer action.
   const sidebarActions = useSidebarThreadActions();
@@ -366,6 +515,8 @@ export function ThreadList({
       ),
     [inactiveAfterHours, now, shelfInbox],
   );
+  // A collapsed shelf shows nothing but its count — except the thread you are
+  // actually looking at, which stays reachable wherever it was filed.
   const visibleInactive = useMemo(
     () =>
       visibleShelfThreads(
@@ -397,16 +548,41 @@ export function ThreadList({
     () => shelfInbox.map((thread) => thread.id),
     [shelfInbox],
   );
-  const folderAccentFor = (
-    folder: (typeof organization.folders)[number],
-    members: readonly PluginSidebarThread[],
-  ) => {
-    const manual = accentCss(folder);
-    if (manual) return manual;
-    const projectIds = new Set(members.map((thread) => thread.projectId));
-    if (projectIds.size !== 1) return undefined;
-    return organization.projectAccentFor([...projectIds][0]!).css;
-  };
+  const folderAccentFor = useCallback(
+    (
+      folder: (typeof organization.folders)[number],
+      members: readonly PluginSidebarThread[],
+    ) => {
+      const manual = accentCss(folder);
+      if (manual) return manual;
+      const projectIds = new Set(members.map((thread) => thread.projectId));
+      if (projectIds.size !== 1) return undefined;
+      return organization.projectAccentFor([...projectIds][0]!).css;
+    },
+    [organization.projectAccentFor],
+  );
+  // The live strip and the search list each take one accent callback for the
+  // whole list; both were rebuilt on every render.
+  const liveStripAccentFor = useCallback(
+    (thread: PluginSidebarThread) =>
+      organization.accentFor(
+        thread,
+        organization.folderOf(thread.id)?.id ?? null,
+      ),
+    [organization.accentFor, organization.folderOf],
+  );
+  const searchAccentFor = useCallback(
+    (thread: PluginSidebarThread) =>
+      organization.accentSourceFor(
+        thread,
+        organization.folderOf(thread.id)?.id ?? null,
+      ),
+    [organization.accentSourceFor, organization.folderOf],
+  );
+  const acknowledgeWake = useCallback(
+    (threadId: string) => void lifecycle.acknowledgeWake(threadId),
+    [lifecycle],
+  );
 
   const visiblePinned = useMemo(
     () => visibleShelfThreads(shelfPinned, expandedShelves.pinned, activeThreadId),
@@ -471,6 +647,16 @@ export function ThreadList({
       ),
     [selectableThreads, selection.selectedIds],
   );
+  useEffect(() => {
+    // A binding outlives its row on purpose — a collapsed shelf still has one —
+    // but not forever; drop them once they clearly outnumber the visible list.
+    const live = rowBindings.current;
+    if (live.size <= Math.max(64, selectableThreadIds.length * 2)) return;
+    const onScreen = new Set(selectableThreadIds);
+    for (const threadId of [...live.keys()]) {
+      if (!onScreen.has(threadId)) live.delete(threadId);
+    }
+  }, [selectableThreadIds, selectableThreadIdsKey]);
   const scopeLabel =
     scope === ALL_PROJECTS
       ? "All projects"
@@ -597,11 +783,12 @@ export function ThreadList({
   // longer on screen, so navigation follows it: the row below, then the row
   // above, then a fresh thread in the same project.
   const parkActiveThread = async (
-    thread: PluginSidebarThread,
+    threadId: string,
+    projectId: string,
     mutation: () => Promise<boolean>,
   ) => {
     const parked = await mutation();
-    if (!parked || activeThreadId !== thread.id) return;
+    if (!parked || activeThreadId !== threadId) return;
     const nextThread = nextThreadAfterParking(
       [
         ...folderPartition.folderEntries.flatMap((entry) => entry.members),
@@ -609,33 +796,93 @@ export function ThreadList({
         ...shelfActive,
         ...shelfInactive,
       ],
-      thread.id,
+      threadId,
     );
     if (nextThread) sidebarActions.open(nextThread.id);
     else
       sidebarActions.openNewThread({
-        projectId: thread.projectId,
+        projectId,
         focusPrompt: true,
       });
     onNavigate();
   };
 
+  // What a row's handlers do, re-published every render. The handlers a row
+  // holds never change identity; they read this box when they fire, so they
+  // act on the current list rather than the one that built them.
+  rowActions.current = {
+    settle: (threadId, projectId) =>
+      void parkActiveThread(threadId, projectId, () =>
+        lifecycle.settle(threadId),
+      ),
+    snooze: (threadId, projectId, snoozedUntil) =>
+      void parkActiveThread(threadId, projectId, () =>
+        lifecycle.snooze(threadId, snoozedUntil),
+      ),
+    acknowledgeWake: (threadId) => void lifecycle.acknowledgeWake(threadId),
+    selectionClick: handleSelectionClick,
+  };
+
+  /**
+   * The row-scoped props that would otherwise be a new closure or a new object
+   * on every render of the list: four handlers and the reorder controls. A
+   * memoised card compares props by identity, so these are created once per
+   * thread and kept. Only the three reorder flags are copied out — they are
+   * what the card actually draws — and the drag handlers delegate to the
+   * freshest controls, which is where the live shelf order lives.
+   */
+  const rowBindingsFor = (
+    thread: PluginSidebarThread,
+    controls: ThreadReorderControls,
+  ): RowBindings => {
+    const existing = rowBindings.current.get(thread.id);
+    if (existing) {
+      existing.latest = controls;
+      if (
+        existing.reorder.disabled !== controls.disabled ||
+        existing.reorder.isDragging !== controls.isDragging ||
+        existing.reorder.hasKeyboardReorder !== controls.hasKeyboardReorder
+      ) {
+        existing.reorder = {
+          ...existing.reorder,
+          disabled: controls.disabled,
+          isDragging: controls.isDragging,
+          hasKeyboardReorder: controls.hasKeyboardReorder,
+        };
+      }
+      return existing;
+    }
+    const threadId = thread.id;
+    const projectId = thread.projectId;
+    const created: RowBindings = {
+      latest: controls,
+      reorder: {
+        disabled: controls.disabled,
+        isDragging: controls.isDragging,
+        hasKeyboardReorder: controls.hasKeyboardReorder,
+        onPointerDown: (event) => created.latest.onPointerDown(event),
+        onKeyDown: (event) => created.latest.onKeyDown(event),
+      },
+      onSettle: () => rowActions.current.settle(threadId, projectId),
+      onSnooze: (snoozedUntil) =>
+        rowActions.current.snooze(threadId, projectId, snoozedUntil),
+      onAcknowledgeWake: () => rowActions.current.acknowledgeWake(threadId),
+      onSelectionClick: (event) =>
+        rowActions.current.selectionClick(threadId, event),
+    };
+    rowBindings.current.set(threadId, created);
+    return created;
+  };
+
+  const renderFolderThread = (thread: PluginSidebarThread) =>
+    renderActiveThread(thread, thread.isPinned ? "pinned" : "inbox");
+
   const renderActiveThread: RenderActiveThread = (thread, shelf) => {
     const folder = organization.folderOf(thread.id);
     const organizationControls = folderDrag.threadControls(thread.id);
-    const rowProps = {
+    const bindings = rowBindingsFor(
       thread,
-      threads: hostThreads,
-      projectName: projectNameById.get(thread.projectId) ?? null,
-      isActive: thread.id === activeThreadId,
-      activeThreadId,
-      onNavigate,
-      now,
-      // @rows:accent (Q2)
-      accent: organization.accentFor(thread, folder?.id ?? null),
-      organization,
-      onFolderCreated: setRenamingFolderId,
-      reorder: folder
+      folder
         ? organizationControls
         : activeSortMode === "manual" || shelf === "pinned"
           ? shelfReorder.controlsFor(
@@ -645,33 +892,49 @@ export function ThreadList({
               organizationControls,
             )
           : { ...organizationControls, hasKeyboardReorder: false },
+    );
+    // One accent resolution per row instead of two: `accentFor` returns the
+    // `css` of exactly the answer `accentSourceFor` gives.
+    const rowAccent = organization.accentSourceFor(thread, folder?.id ?? null);
+    const rowProps = {
+      thread,
+      threads: descendantsByThread.get(thread.id) ?? NO_RELATED_THREADS,
+      projectName: projectNameById.get(thread.projectId) ?? null,
+      isActive: thread.id === activeThreadId,
+      activeThreadId,
+      onNavigate: navigate,
+      now,
+      // @rows:accent (Q2)
+      accent: rowAccent.css,
+      organization: rowOrganization,
+      onFolderCreated: setRenamingFolderId,
+      reorder: bindings.reorder,
       // @rows:workflow (Q3)
-      workflowRuns: workflow.runs,
+      // Q3 wired workflowRuns: workflow.runs — the same runs, narrowed above
+      // to this row and its descendants, which is all a card ever draws.
+      workflowRuns: relatedRunsByThread.get(thread.id) ?? NO_WORKFLOW_RUNS,
       // @rows:decor (Q4)
       projectDecor: decor.decorFor(thread.projectId),
-      accentSource: organization.accentSourceFor(thread, folder?.id ?? null)
-        .source,
+      accentSource: rowAccent.source,
       // @rows:lifecycle (Q5)
       canPark: lifecycle.canPark(thread),
       isWoke: lifecycle.wokeFor(thread),
       snoozePresets,
-      onSettle: () =>
-        void parkActiveThread(thread, () => lifecycle.settle(thread.id)),
-      onSnooze: (snoozedUntil: number) =>
-        void parkActiveThread(thread, () =>
-          lifecycle.snooze(thread.id, snoozedUntil),
-        ),
-      onAcknowledgeWake: () => void lifecycle.acknowledgeWake(thread.id),
+      onSettle: bindings.onSettle,
+      onSnooze: bindings.onSnooze,
+      onAcknowledgeWake: bindings.onAcknowledgeWake,
       // @rows:selection-sort (Q6)
       projectIconUrl: projectIconUrl(thread.projectId, projectIconRevision),
       isSelected: selection.selectedIds.has(thread.id),
-      onSelectionClick: (event: ReactMouseEvent<HTMLAnchorElement>) =>
-        handleSelectionClick(thread.id, event),
+      onSelectionClick: bindings.onSelectionClick,
     } satisfies ComponentProps<typeof ThreadCard>;
     return <ThreadCard key={thread.id} {...rowProps} />;
   };
 
   return (
+    // One tooltip provider for the whole list. Radix keeps its open/skip
+    // delay state here, so a card no longer carries a provider per tooltip.
+    <TooltipProvider>
     <div data-glass-sidebar-root className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
         {/* @slot:live-strip (Q3) */}
@@ -681,17 +944,12 @@ export function ThreadList({
         <LiveStrip
           threads={visibleThreads}
           projectNameById={projectNameById}
-          accentFor={(thread) =>
-            organization.accentFor(
-              thread,
-              organization.folderOf(thread.id)?.id ?? null,
-            )
-          }
+          accentFor={liveStripAccentFor}
           projectDecor={decor.projects}
           activeThreadId={activeThreadId}
-          onNavigate={onNavigate}
+          onNavigate={navigate}
           actions={sidebarActions}
-          workflowRows={workflow.runs}
+          workflowRows={workflowRuns}
           now={now}
         />
         {/* @slot:bulk-bar (Q6) */}
@@ -766,26 +1024,15 @@ export function ThreadList({
             projectNameById={projectNameById}
             projectIconRevision={projectIconRevision}
             decorFor={decor.decorFor}
-            accentFor={(thread) =>
-              organization.accentSourceFor(
-                thread,
-                organization.folderOf(thread.id)?.id ?? null,
-              )
-            }
+            accentFor={searchAccentFor}
             projectAccentFor={organization.projectAccentFor}
             activeThreadId={activeThreadId}
             now={now}
-            wokeThreadIds={new Set(
-              searchResults
-                .filter((thread) => lifecycle.wokeFor(thread))
-                .map((thread) => thread.id),
-            )}
-            onAcknowledgeWake={(threadId) =>
-              void lifecycle.acknowledgeWake(threadId)
-            }
+            wokeThreadIds={wokeSearchResultIds}
+            onAcknowledgeWake={acknowledgeWake}
             selectedThreadIds={selection.selectedIds}
             onSelectionClick={handleSelectionClick}
-            onNavigate={onNavigate}
+            onNavigate={navigate}
           />
         ) : (
           <div className="flex flex-col">
@@ -802,9 +1049,7 @@ export function ThreadList({
               }
               accentForFolder={folderAccentFor}
               projectDecor={decor.projects}
-              renderThread={(thread) =>
-                renderActiveThread(thread, thread.isPinned ? "pinned" : "inbox")
-              }
+              renderThread={renderFolderThread}
             />
             {shelfPinned.length > 0 ? (
               <CollapsibleShelf
@@ -960,6 +1205,7 @@ export function ThreadList({
         )}
       </div>
     </div>
+    </TooltipProvider>
   );
 }
 

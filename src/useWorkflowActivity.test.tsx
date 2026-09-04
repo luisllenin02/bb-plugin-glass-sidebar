@@ -27,7 +27,9 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   useRpc: () => sdk.rpc,
 }));
 
-const { useWorkflowActivity } = await import("./useWorkflowActivity");
+const { useWorkflowActivity, WORKFLOW_ACTIVITY_COALESCE_MS } = await import(
+  "./useWorkflowActivity"
+);
 
 function thread(updatedAt: number): PluginSidebarThread {
   return {
@@ -115,6 +117,85 @@ describe("useWorkflowActivity", () => {
     expect(clearInterval).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(60_000);
     expect(sdk.call).toHaveBeenCalledTimes(3);
+  });
+
+  it("coalesces a burst of host revisions into one trailing read", async () => {
+    vi.useFakeTimers();
+    sdk.threads = [thread(100)];
+    const rendered = render(<Probe />);
+    await act(async () => {
+      vi.advanceTimersByTime(0);
+      await Promise.resolve();
+    });
+    expect(sdk.call).toHaveBeenCalledTimes(1);
+
+    // A streaming agent bumps `updatedAt` many times over. The first tick is
+    // still prompt, so nothing the user can see waits on the window.
+    sdk.threads = [thread(200)];
+    rendered.rerender(<Probe />);
+    await act(async () => Promise.resolve());
+    expect(sdk.call).toHaveBeenCalledTimes(2);
+
+    for (const updatedAt of [300, 400, 500, 600]) {
+      sdk.threads = [thread(updatedAt)];
+      rendered.rerender(<Probe />);
+      await act(async () => Promise.resolve());
+    }
+    // Four more revisions, no four more round trips.
+    expect(sdk.call).toHaveBeenCalledTimes(2);
+
+    // The trailing read is guaranteed: the burst's last state is always read.
+    await act(async () => {
+      vi.advanceTimersByTime(WORKFLOW_ACTIVITY_COALESCE_MS);
+      await Promise.resolve();
+    });
+    expect(sdk.call).toHaveBeenCalledTimes(3);
+
+    // And the window closes again once the burst stops.
+    await act(async () => {
+      vi.advanceTimersByTime(WORKFLOW_ACTIVITY_COALESCE_MS);
+      await Promise.resolve();
+    });
+    expect(sdk.call).toHaveBeenCalledTimes(3);
+    rendered.unmount();
+  });
+
+  it("shares one request between the callers that ask at once", async () => {
+    vi.useFakeTimers();
+    let release: (() => void) | null = null;
+    sdk.call.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              runs: [],
+              updatedAt: 1,
+              sourcePath: "/tmp/workflows/data.db",
+              sourceStatus: "ok" as const,
+            });
+        }),
+    );
+    sdk.threads = [thread(100)];
+    const rendered = render(<Probe />);
+    await act(async () => {
+      vi.advanceTimersByTime(0);
+      await Promise.resolve();
+    });
+    expect(sdk.call).toHaveBeenCalledTimes(1);
+
+    // A visibility flip while that first read is still open must not open a
+    // second one: both callers want the same answer.
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve();
+    });
+    expect(sdk.call).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release?.();
+      await Promise.resolve();
+    });
+    rendered.unmount();
   });
 
   it("uses the first host list revision before the idle fallback", async () => {

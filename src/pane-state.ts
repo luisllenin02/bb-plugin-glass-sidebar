@@ -129,12 +129,31 @@ export function showAccentRail(state: PaneState, hasAccent: boolean): boolean {
 }
 
 /**
+ * Both class builders and the accent style run once per row on every render,
+ * and each has a small input domain: three pane states, two flags, and
+ * whatever colours the user has actually assigned. Caching the answers turns
+ * that per-row `cn()` pass — and, for the style, a fresh object identity on
+ * every render — into a map lookup. All three are pure functions, so the
+ * cached answer is the answer; the returned objects are read-only to callers,
+ * which pass them straight to JSX.
+ */
+const rowStateClassCache = new Map<string, string>();
+const rowRootClassCache = new Map<string, string>();
+const rowAccentStyleCache = new Map<string, CSSProperties>();
+
+/**
  * Row-root classes for a pane state. The rail draws inside the row's existing
  * left padding, so `hasAccent` costs no layout; it only marks the row for theme
  * CSS.
  */
 export function rowStateClasses(state: PaneState, hasAccent: boolean): string {
-  return cn(rowSurfaceClass(state), hasAccent && ACCENT_ROW_CLASS);
+  const key = `${state}${hasAccent ? "1" : "0"}`;
+  let classes = rowStateClassCache.get(key);
+  if (classes === undefined) {
+    classes = cn(rowSurfaceClass(state), hasAccent && ACCENT_ROW_CLASS);
+    rowStateClassCache.set(key, classes);
+  }
+  return classes;
 }
 
 /** The row root's full class set, selection included. */
@@ -145,11 +164,17 @@ export function rowRootClasses(options: {
 }): string {
   const { state, hasAccent, isSelected } = options;
   if (!isSelected) return rowStateClasses(state, hasAccent);
-  return cn(
-    rowBackgroundClass(state),
-    hasAccent && ACCENT_ROW_CLASS,
-    SELECTED_ROW_CLASS,
-  );
+  const key = `${state}${hasAccent ? "1" : "0"}`;
+  let classes = rowRootClassCache.get(key);
+  if (classes === undefined) {
+    classes = cn(
+      rowBackgroundClass(state),
+      hasAccent && ACCENT_ROW_CLASS,
+      SELECTED_ROW_CLASS,
+    );
+    rowRootClassCache.set(key, classes);
+  }
+  return classes;
 }
 
 /**
@@ -161,5 +186,10 @@ export function rowAccentStyle(
   accent: string | undefined,
 ): CSSProperties | undefined {
   if (!accent) return undefined;
-  return { "--thread-accent": accent } as CSSProperties;
+  let style = rowAccentStyleCache.get(accent);
+  if (style === undefined) {
+    style = { "--thread-accent": accent } as CSSProperties;
+    rowAccentStyleCache.set(accent, style);
+  }
+  return style;
 }

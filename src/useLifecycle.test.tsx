@@ -116,6 +116,9 @@ const settledRow = (threadId: string): StoredLifecycleRow => ({
 
 afterEach(() => {
   cleanup();
+  // A test that installs fake timers must not leave them behind: `waitFor`
+  // never resolves under them, so the leak would fail every later test.
+  vi.useRealTimers();
   window.localStorage.clear();
 });
 
@@ -210,6 +213,106 @@ describe("useLifecycle mount budget", () => {
         isWorking: false,
       },
     ]);
+  });
+
+  it("coalesces a burst of updatedAt ticks into one trailing read", async () => {
+    // While an agent streams, the host bumps `updatedAt` continuously. None of
+    // those ticks change what this client sends, so they must not each buy a
+    // round trip — but the last one still has to be read, or the list would
+    // sit on a stale answer until the next unrelated signal.
+    const { ACTIVITY_COALESCE_MS } = await import("./useLifecycle");
+    const streaming = thread({ id: "thr_stream" });
+    const threads = [streaming];
+    const rendered = renderList(threads, []);
+    await waitFor(() =>
+      expect(callsTo(rendered.rpcCalls, "listLifecycle")).toBe(1),
+    );
+
+    vi.useFakeTimers();
+    try {
+      for (let tick = 1; tick <= 5; tick += 1) {
+        threads[0] = thread({
+          id: "thr_stream",
+          updatedAt: streaming.updatedAt + tick,
+        });
+        await act(async () => {
+          rendered.lifecycle.rerender(createElement(inbox.component, props));
+        });
+      }
+      // Five ticks, still one read: the burst is held inside the window.
+      expect(callsTo(rendered.rpcCalls, "listLifecycle")).toBe(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ACTIVITY_COALESCE_MS);
+      });
+      expect(callsTo(rendered.rpcCalls, "listLifecycle")).toBe(2);
+
+      // Nothing else is owed once the burst stops.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ACTIVITY_COALESCE_MS * 3);
+      });
+      expect(callsTo(rendered.rpcCalls, "listLifecycle")).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still reads at once when a live-work signal changes mid-burst", async () => {
+    // The release the server waits for cannot be held behind the coalescing
+    // window, so a change to the signals this client actually sends refreshes
+    // immediately and consumes the pending tick rather than adding to it.
+    const working = thread({
+      id: "thr_burst",
+      activity: {
+        workflows: 1,
+        backgroundAgents: 0,
+        backgroundCommands: 0,
+        planMode: 0,
+        goals: 0,
+      },
+    });
+    const threads = [working];
+    const rendered = renderList(threads, []);
+    await waitFor(() =>
+      expect(callsTo(rendered.rpcCalls, "listLifecycle")).toBe(1),
+    );
+
+    const { ACTIVITY_COALESCE_MS } = await import("./useLifecycle");
+    vi.useFakeTimers();
+    try {
+      // A tick that only moves `updatedAt` opens the window.
+      threads[0] = thread({
+        id: "thr_burst",
+        updatedAt: working.updatedAt + 1,
+        activity: working.activity,
+      });
+      await act(async () => {
+        rendered.lifecycle.rerender(createElement(inbox.component, props));
+      });
+      expect(callsTo(rendered.rpcCalls, "listLifecycle")).toBe(1);
+
+      // The work stops inside that window: prompt, not deferred.
+      threads[0] = thread({
+        id: "thr_burst",
+        updatedAt: working.updatedAt + 2,
+      });
+      await act(async () => {
+        rendered.lifecycle.rerender(createElement(inbox.component, props));
+      });
+      expect(callsTo(rendered.rpcCalls, "listLifecycle")).toBe(2);
+
+      // And the coalesced read it superseded does not fire behind it.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ACTIVITY_COALESCE_MS * 3);
+      });
+      expect(callsTo(rendered.rpcCalls, "listLifecycle")).toBe(2);
+      const latest = rendered.rpcCalls
+        .filter((entry) => entry.method === "listLifecycle")
+        .at(-1) as { input: { signals: Array<Record<string, unknown>> } };
+      expect(latest.input.signals[0]).toMatchObject({ isWorking: false });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("re-reads when the lifecycle signal arrives", async () => {

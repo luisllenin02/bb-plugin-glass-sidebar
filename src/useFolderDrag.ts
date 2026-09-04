@@ -8,11 +8,7 @@ import {
   type PointerEventHandler,
 } from "react";
 import type { ThreadReorderControls } from "./ThreadCard";
-import {
-  dropTargetFromPoint,
-  type DropRect,
-  type FolderDropTarget,
-} from "./folder-list";
+import { dropTargetFromPoint, type FolderDropTarget } from "./folder-list";
 import {
   armTouchHold,
   blockTouchScroll,

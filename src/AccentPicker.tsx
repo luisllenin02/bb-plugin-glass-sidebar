@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
   ACCENT_NAMES,
   ACCENT_PALETTE,
@@ -31,12 +31,16 @@ export function AccentPicker({
   const [customDraft, setCustomDraft] = useState(value.customColor ?? "");
   const [customInvalid, setCustomInvalid] = useState(false);
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const choices = includeNone
-    ? ACCENT_PALETTE.map((color, colorIndex) => ({ color, colorIndex }))
-    : ACCENT_PALETTE.slice(1).map((color, index) => ({
-        color,
-        colorIndex: index + 1,
-      }));
+  const choices = useMemo(
+    () =>
+      includeNone
+        ? ACCENT_PALETTE.map((color, colorIndex) => ({ color, colorIndex }))
+        : ACCENT_PALETTE.slice(1).map((color, index) => ({
+            color,
+            colorIndex: index + 1,
+          })),
+    [includeNone],
+  );
 
   useEffect(() => {
     setCustomDraft(value.customColor ?? "");

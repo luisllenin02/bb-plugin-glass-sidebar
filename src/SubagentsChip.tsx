@@ -53,12 +53,14 @@ export function SubagentsChip({
   );
 
   const tree = buildRelatedThreadTree(threads, threadId);
-  if (tree.length === 0) return null;
-
   const related = flattenRelatedThreadTree(tree);
   const needsYou = related.some((node) => node.thread.hasPendingInteraction);
   const label = needsYou ? "Needs you" : `${related.length} children`;
 
+  // Every hook runs before the chip decides whether it draws: a thread that
+  // spawns its first child would otherwise change this component's hook count
+  // between renders, which React refuses. The measuring effects below are
+  // already gated on `open`, so nothing runs for a chip that draws nothing.
   const measureMenu = useCallback(() => {
     const trigger = triggerRef.current;
     if (!trigger || typeof window === "undefined") return;
@@ -107,6 +109,8 @@ export function SubagentsChip({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open]);
+
+  if (tree.length === 0) return null;
 
   const openAllInSplit = () => {
     for (const node of related) {

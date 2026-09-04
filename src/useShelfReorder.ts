@@ -96,20 +96,21 @@ export function useShelfReorder({
   const cancelRef = useRef<(() => void) | null>(null);
   useEffect(() => () => cancelRef.current?.(), []);
 
+  // Off a drag, `orderPinnedThreads(rows, null)` only copies the array it was
+  // given, so pass the rows straight through instead: no copy, no sort, and
+  // the shelf keeps the identity the reorder hook already memoised.
   const orderedPinned = useMemo(
     () =>
-      orderPinnedThreads(
-        pinnedReorder.threads,
-        dragOrder?.shelf === "pinned" ? dragOrder.ids : null,
-      ),
+      dragOrder?.shelf === "pinned"
+        ? orderPinnedThreads(pinnedReorder.threads, dragOrder.ids)
+        : pinnedReorder.threads,
     [dragOrder, pinnedReorder.threads],
   );
   const orderedInbox = useMemo(
     () =>
-      orderPinnedThreads(
-        inboxReorder.threads,
-        dragOrder?.shelf === "inbox" ? dragOrder.ids : null,
-      ),
+      dragOrder?.shelf === "inbox"
+        ? orderPinnedThreads(inboxReorder.threads, dragOrder.ids)
+        : inboxReorder.threads,
     [dragOrder, inboxReorder.threads],
   );
 
@@ -198,6 +199,10 @@ export function useShelfReorder({
             setDragOrder(next);
           }
 
+          // Built once per gesture: `reorderAt` runs on every pointermove and
+          // was scanning the whole visible shelf to answer the same question.
+          const visibleIdSet = new Set(visibleIds);
+
           function reorderAt(clientX: number, clientY: number) {
             const hit = document.elementFromPoint(clientX, clientY);
             const row = hit instanceof Element ? hit.closest("li") : null;
@@ -208,7 +213,7 @@ export function useShelfReorder({
             if (
               !row ||
               !targetId ||
-              !visibleIds.includes(targetId) ||
+              !visibleIdSet.has(targetId) ||
               !current ||
               current.shelf !== shelf ||
               current.movingId === targetId

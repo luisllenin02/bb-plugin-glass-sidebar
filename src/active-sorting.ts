@@ -20,6 +20,14 @@ export const SHELF_EXPANSION_STORAGE_KEY =
   "glass-sidebar:shelf-expansion:v1";
 export const ALL_PROJECTS = "__all__";
 
+/**
+ * `String.prototype.localeCompare` builds a collator on every call. Project
+ * grouping compares names on the order of n log n times per sort, so hold one
+ * collator instead. Default locale, default options: the same ordering, once
+ * the setup cost stops being paid per comparison.
+ */
+const compareNames = new Intl.Collator().compare;
+
 export function isActiveSortMode(value: string): value is ActiveSortMode {
   return ACTIVE_SORT_MODES.some((mode) => mode === value);
 }
@@ -51,9 +59,10 @@ export function sortActiveThreads<
   if (mode === "manual") return [...threads];
   return [...threads].sort((left, right) => {
     if (mode === "project") {
-      const projectOrder = (
-        projectNameById.get(left.projectId) ?? left.projectId
-      ).localeCompare(projectNameById.get(right.projectId) ?? right.projectId);
+      const projectOrder = compareNames(
+        projectNameById.get(left.projectId) ?? left.projectId,
+        projectNameById.get(right.projectId) ?? right.projectId,
+      );
       if (projectOrder !== 0) return projectOrder;
     }
     const primary = mode === "activity" ? "updatedAt" : "createdAt";
@@ -85,7 +94,8 @@ export function groupActiveThreadsByProject<T extends { projectId: string }>(
     groups.set(thread.projectId, group);
   }
   return [...groups.values()].sort((left, right) =>
-    (projectNameById.get(left.projectId) ?? left.projectId).localeCompare(
+    compareNames(
+      projectNameById.get(left.projectId) ?? left.projectId,
       projectNameById.get(right.projectId) ?? right.projectId,
     ),
   );
@@ -97,8 +107,10 @@ export function visibleShelfThreads<T extends { id: string }>(
   activeThreadId: string | null,
   limit = threads.length,
 ): T[] {
-  const activeThread = threads.find((thread) => thread.id === activeThreadId);
-  if (!expanded) return activeThread ? [activeThread] : [];
+  if (!expanded) {
+    const activeThread = threads.find((thread) => thread.id === activeThreadId);
+    return activeThread ? [activeThread] : [];
+  }
   return threads.filter(
     (thread, index) => index < limit || thread.id === activeThreadId,
   );

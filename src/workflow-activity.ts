@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { WorkflowActivitySnapshot } from "./workflow-activity-shared";
 
@@ -22,6 +22,14 @@ interface WorkflowRunDbRow {
 interface CachedWorkflowQuery {
   database: Database.Database;
   statement: Database.Statement<[], WorkflowRunDbRow>;
+  /**
+   * Identity of the file the handle was opened on. A sibling plugin that
+   * replaces its store (a reinstall, a restore) leaves the path in place, and
+   * a cached handle would go on reading the unlinked file for the life of
+   * this plugin. Zero on a filesystem that does not report inodes, which just
+   * restores the previous "path exists" behaviour.
+   */
+  fileId: string;
 }
 
 export type OpenSiblingDatabase = (sourcePath: string) => Database.Database;
@@ -63,9 +71,13 @@ export function closeWorkflowActivitySource(sourcePath: string): void {
 function queryFor(
   sourcePath: string,
   openDatabase: OpenSiblingDatabase,
+  fileId: string,
 ): CachedWorkflowQuery {
   const cached = cachedQueries.get(sourcePath);
-  if (cached) return cached;
+  if (cached) {
+    if (cached.fileId === fileId) return cached;
+    closeCachedQuery(sourcePath);
+  }
 
   const database = openDatabase(sourcePath);
   try {
@@ -74,6 +86,7 @@ function queryFor(
       statement: database.prepare<[], WorkflowRunDbRow>(
         ACTIVE_WORKFLOW_RUNS_SQL,
       ),
+      fileId,
     };
     cachedQueries.set(sourcePath, query);
     return query;
@@ -106,7 +119,11 @@ export function readWorkflowActivity(
   now = Date.now(),
   warn: SiblingStoreWarningSink = () => {},
 ): WorkflowActivitySnapshot {
-  if (!existsSync(sourcePath)) {
+  // One stat answers both questions the read has to ask — does the store
+  // exist, and is it still the same file — for what the existence check alone
+  // used to cost.
+  const stats = statSync(sourcePath, { throwIfNoEntry: false });
+  if (!stats) {
     closeCachedQuery(sourcePath);
     return {
       runs: [],
@@ -116,7 +133,11 @@ export function readWorkflowActivity(
     };
   }
   try {
-    const rows = queryFor(sourcePath, openDatabase).statement.all() as WorkflowRunDbRow[];
+    const rows = queryFor(
+      sourcePath,
+      openDatabase,
+      `${stats.dev}:${stats.ino}`,
+    ).statement.all() as WorkflowRunDbRow[];
     return {
       runs: rows.map((row) => ({
         id: row.id,

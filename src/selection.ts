@@ -56,19 +56,18 @@ export function reconcileThreadSelection(
   visibleIds: readonly string[],
 ): ThreadSelectionState {
   const visible = new Set(visibleIds);
-  const selectedIds = new Set(
-    [...current.selectedIds].filter((threadId) => visible.has(threadId)),
-  );
+  const selectedIds = new Set<string>();
+  for (const threadId of current.selectedIds) {
+    if (visible.has(threadId)) selectedIds.add(threadId);
+  }
   const anchorId =
     current.anchorId !== null && visible.has(current.anchorId)
       ? current.anchorId
       : null;
 
-  if (
-    anchorId === current.anchorId &&
-    selectedIds.size === current.selectedIds.size &&
-    [...selectedIds].every((threadId) => current.selectedIds.has(threadId))
-  ) {
+  // Same size and every retained id already selected means nothing was
+  // dropped, so hand back the state that is already on screen.
+  if (anchorId === current.anchorId && selectedIds.size === current.selectedIds.size) {
     return current;
   }
   return { selectedIds, anchorId };

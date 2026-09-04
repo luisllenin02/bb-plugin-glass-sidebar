@@ -3,19 +3,22 @@ import type {
   PluginSidebarThreadIndicator,
 } from "@get-bb/plugin-sdk/app";
 
-const NEEDS_YOU_INDICATORS: readonly PluginSidebarThreadIndicator[] = [
+// Sets, not arrays: `classifyNow` runs for every thread on every render of the
+// strip and again for every column, and a linear scan of both tables was the
+// whole cost of the call.
+const NEEDS_YOU_INDICATORS: ReadonlySet<PluginSidebarThreadIndicator> = new Set([
   "waiting-for-input",
   "unread-error",
-];
+]);
 
-const WORKING_INDICATORS: readonly PluginSidebarThreadIndicator[] = [
+const WORKING_INDICATORS: ReadonlySet<PluginSidebarThreadIndicator> = new Set([
   "runtime",
   "workflow",
   "background-agent",
   "background-command",
   "plan-mode",
   "working-draft",
-];
+]);
 
 export type NowClass = "needs-you" | "working" | null;
 
@@ -23,13 +26,12 @@ export function classifyNow(
   thread: Pick<PluginSidebarThread, "indicator"> &
     Partial<Pick<PluginSidebarThread, "activity">>,
 ): NowClass {
-  if (NEEDS_YOU_INDICATORS.includes(thread.indicator)) return "needs-you";
-  if (WORKING_INDICATORS.includes(thread.indicator)) return "working";
-  if (
-    thread.activity &&
-    Object.values(thread.activity).some((count) => count > 0)
-  ) {
-    return "working";
+  if (NEEDS_YOU_INDICATORS.has(thread.indicator)) return "needs-you";
+  if (WORKING_INDICATORS.has(thread.indicator)) return "working";
+  if (thread.activity) {
+    for (const count of Object.values(thread.activity)) {
+      if (count > 0) return "working";
+    }
   }
   return null;
 }

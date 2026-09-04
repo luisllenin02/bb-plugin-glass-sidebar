@@ -1,4 +1,5 @@
 import {
+  memo,
   useMemo,
   useState,
   type KeyboardEventHandler,
@@ -62,8 +63,13 @@ export interface ThreadReorderControls {
  * The row is a positioned container with a full-bleed anchor UNDER the
  * controls, the way bb's own thread row does it: a `<button>` inside an `<a>`
  * is invalid interactive nesting and breaks keyboard behaviour.
+ *
+ * Memoised: the list re-renders on every realtime push, minute tick and
+ * lifecycle refresh, and a row whose own props did not change must not be
+ * redrawn. That only pays off while the list keeps every prop below stable —
+ * see the row bindings in `ThreadList`.
  */
-export function ThreadCard({
+export const ThreadCard = memo(function ThreadCard({
   thread,
   threads,
   workflowRuns = [],
@@ -91,8 +97,17 @@ export function ThreadCard({
   now,
 }: {
   thread: PluginSidebarThread;
+  /**
+   * The rows this card can reach: its own descendants. Only descendants are
+   * read (the related tree and the related run filter), so the list passes
+   * exactly those instead of the whole thread array — an unrelated thread's
+   * update then leaves this card alone.
+   */
   threads?: readonly PluginSidebarThread[];
-  /** Active workflow runs from the Workflows plugin's read-only store. */
+  /**
+   * Active workflow runs from the Workflows plugin's read-only store, already
+   * narrowed by the list to this row and its descendants.
+   */
   workflowRuns?: readonly WorkflowRun[];
   projectName: string | null;
   projectIconUrl?: string | null;
@@ -431,7 +446,7 @@ export function ThreadCard({
       </li>
     </RowContextMenu>
   );
-}
+});
 
 function PullRequestBadge({ threadId }: { threadId: string }) {
   const { pullRequest } = useSidebarThreadPullRequest(threadId);

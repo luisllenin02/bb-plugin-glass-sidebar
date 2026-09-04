@@ -124,6 +124,60 @@ function manualAccentSource(
   return NO_SOURCE;
 }
 
+function sameAccents(
+  left: Record<string, AccentValue>,
+  right: Record<string, AccentValue>,
+): boolean {
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((key) => {
+    const other = right[key];
+    return (
+      other !== undefined &&
+      other.colorIndex === left[key]!.colorIndex &&
+      other.customColor === left[key]!.customColor
+    );
+  });
+}
+
+/**
+ * Field-for-field equality. The server publishes ORGANIZATION_CHANNEL after
+ * every mutation and every client re-reads on it, on every visibility flip
+ * too, so most reads return exactly what is already on screen. Keeping the
+ * object identity on those reads keeps `folders`, `folderOf` and the three
+ * accent resolvers stable, which is what lets the rows below memoise at all.
+ */
+function sameOrganization(left: Organization, right: Organization): boolean {
+  if (left === right) return true;
+  if (
+    left.folders.length !== right.folders.length ||
+    !sameAccents(left.threadAccents, right.threadAccents) ||
+    !sameAccents(left.projectAccents, right.projectAccents)
+  ) {
+    return false;
+  }
+  const memberKeys = Object.keys(left.members);
+  if (
+    memberKeys.length !== Object.keys(right.members).length ||
+    memberKeys.some((threadId) => left.members[threadId] !== right.members[threadId])
+  ) {
+    return false;
+  }
+  return left.folders.every((folder, index) => {
+    const other = right.folders[index]!;
+    return (
+      folder.id === other.id &&
+      folder.name === other.name &&
+      folder.colorIndex === other.colorIndex &&
+      folder.customColor === other.customColor &&
+      folder.collapsed === other.collapsed &&
+      folder.sortIndex === other.sortIndex &&
+      folder.threadIds.length === other.threadIds.length &&
+      folder.threadIds.every((threadId, at) => threadId === other.threadIds[at])
+    );
+  });
+}
+
 function copyOrganization(organization: Organization): Organization {
   return {
     folders: organization.folders.map((folder) => ({
@@ -154,6 +208,10 @@ export function useOrganization(
   const [status, setStatus] = useState<OrganizationStatus>("loading");
   const requestSeq = useRef(0);
   const optimisticId = useRef(0);
+  // The organization as it stands right now, readable from a callback that
+  // must not be re-created every time that value changes.
+  const organizationRef = useRef<Organization | null>(organization);
+  organizationRef.current = organization;
   const { resolveAccentSource, ...resolutionOptions } = accentOptions;
   const autoProjectColours = resolutionOptions.autoProjectColours;
 
@@ -162,6 +220,12 @@ export function useOrganization(
     try {
       const next = await rpc.call("getOrganization", {});
       if (seq === requestSeq.current) {
+        const previous = organizationRef.current;
+        if (previous !== null && sameOrganization(previous, next)) {
+          setStatus("ready");
+          return previous;
+        }
+        organizationRef.current = next;
         setOrganization(next);
         setStatus("ready");
       }
@@ -195,22 +259,30 @@ export function useOrganization(
       request: () => Promise<T>,
       message: string,
     ): Promise<T> => {
-      const rollback = organization ?? EMPTY_ORGANIZATION;
-      setOrganization(optimistic(rollback));
+      const rollback = organizationRef.current ?? EMPTY_ORGANIZATION;
+      const next = optimistic(rollback);
+      organizationRef.current = next;
+      setOrganization(next);
       try {
         // No read here: the server publishes ORGANIZATION_CHANNEL after every
         // mutation, and that signal is what reconciles the optimistic state.
         return await request();
       } catch (error) {
         const host = await refresh();
-        if (host === null) setOrganization(rollback);
+        if (host === null) {
+          organizationRef.current = rollback;
+          setOrganization(rollback);
+        }
         toast.error(message, {
           description: error instanceof Error ? error.message : undefined,
         });
         throw error;
       }
     },
-    [organization, refresh],
+    // No `organization` here on purpose: it is read through the ref above, so
+    // `commit` — and the whole `actions` object memoised on it — keeps one
+    // identity for the life of the hook instead of a new one per state change.
+    [refresh],
   );
 
   const actions = useMemo<OrganizationActions>(

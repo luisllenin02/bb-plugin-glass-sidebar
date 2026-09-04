@@ -59,6 +59,13 @@ type LifecycleMutationRequest =
 
 type LifecycleRows = ReadonlyMap<string, ThreadLifecycleRow>;
 
+/**
+ * How long a burst of `updatedAt`-only changes may coalesce. Short enough that
+ * a policy transition still lands in the same beat as the change that caused
+ * it; long enough that a streaming agent cannot turn one read into hundreds.
+ */
+export const ACTIVITY_COALESCE_MS = 400;
+
 const lifecycleRowsByRpcClient = new WeakMap<object, LifecycleRows>();
 const LIFECYCLE_ROWS_CACHE_KEY = "glass-sidebar:lifecycle-cache:v1";
 
@@ -96,8 +103,13 @@ function readStoredLifecycleRows(): LifecycleRows | null {
   }
 }
 
-function cacheLifecycleRows(rpcClient: object, rows: LifecycleRows): void {
+/** In-memory only: no serialisation, so it is free to call on a no-op read. */
+function rememberLifecycleRows(rpcClient: object, rows: LifecycleRows): void {
   lifecycleRowsByRpcClient.set(rpcClient, rows);
+}
+
+function cacheLifecycleRows(rpcClient: object, rows: LifecycleRows): void {
+  rememberLifecycleRows(rpcClient, rows);
   try {
     window.localStorage.setItem(
       LIFECYCLE_ROWS_CACHE_KEY,
@@ -106,6 +118,30 @@ function cacheLifecycleRows(rpcClient: object, rows: LifecycleRows): void {
   } catch {
     // Keep the current runtime correct even when durable storage is blocked.
   }
+}
+
+/**
+ * Row-for-row equality. Most `listLifecycle` answers repeat the rows already on
+ * screen, and re-storing them would replace the Map, re-serialise the whole
+ * store into `localStorage`, and hand every consumer a new `LifecycleApi` for
+ * no visible change.
+ */
+function sameLifecycleRows(left: LifecycleRows, right: LifecycleRows): boolean {
+  if (left === right) return true;
+  if (left.size !== right.size) return false;
+  for (const [threadId, row] of left) {
+    const other = right.get(threadId);
+    if (
+      other === undefined ||
+      other.settledAt !== row.settledAt ||
+      other.settledOverride !== row.settledOverride ||
+      other.snoozedUntil !== row.snoozedUntil ||
+      other.snoozedAt !== row.snoozedAt
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 const SUCCESS_MESSAGE: Record<
@@ -192,6 +228,10 @@ export function useLifecycle(
       lifecycleRowsByRpcClient.get(rpc) ?? readStoredLifecycleRows() ?? new Map(),
   );
   const [now, setNow] = useState(() => Date.now());
+  // What is on screen right now, readable from a response callback that may
+  // land before React has re-rendered.
+  const rowsRef = useRef<LifecycleRows>(rows);
+  rowsRef.current = rows;
 
   // Live-work signals the server cannot see. Read through a ref so a thread
   // update does not re-arm the mount effect and spend a second first-paint RPC.
@@ -217,6 +257,16 @@ export function useLifecycle(
       const nextRows = new Map(
         result.rows.map((row) => [row.threadId, row] as const),
       );
+      // Hand back the same Map when nothing moved. `LifecycleApi` is memoised
+      // on this value, so a stable identity keeps every row's props stable
+      // through the refreshes a streaming thread provokes, and skips
+      // re-serialising the whole store into `localStorage`.
+      const previous = rowsRef.current;
+      if (sameLifecycleRows(previous, nextRows)) {
+        rememberLifecycleRows(rpc, previous);
+        return;
+      }
+      rowsRef.current = nextRows;
       cacheLifecycleRows(rpc, nextRows);
       setRows(nextRows);
     } catch {
@@ -243,24 +293,60 @@ export function useLifecycle(
   }, [refresh]);
 
   // A host thread-list revision is the other signal that can change a policy
-  // outcome (new activity, a new pin), so it drives the next evaluation. The
-  // two live-work fields belong in the key as much as `updatedAt` does: the
-  // server holds a thread this client reported live until a later report says
-  // it went quiet, and a thread can stop working or drop its raised hand
-  // without the host bumping `updatedAt`. Leaving them out would mean that
-  // release is never sent.
-  const threadListRevision = threads
-    .map(
-      (thread) =>
-        `${thread.id}:${thread.updatedAt}:${thread.hasPendingInteraction ? 1 : 0}:${isWorking(thread) ? 1 : 0}`,
-    )
-    .join("");
-  const lastRevision = useRef(threadListRevision);
+  // outcome, and it splits into two keys that deserve different urgency.
+  //
+  // `signalRevision` is exactly what this client sends: the id set and the two
+  // live-work fields. The server holds a thread this client reported live
+  // until a later report says it went quiet, and a thread can stop working or
+  // drop its raised hand without the host bumping `updatedAt`. Leaving those
+  // fields out would mean that release is never sent, so this key still
+  // refreshes at once, as it always did.
+  //
+  // `activityRevision` is `updatedAt` alone. It is never part of the request,
+  // so it cannot change what this client asks; it only invites the server to
+  // re-run its policy pass over its own view of the threads. A streaming agent
+  // bumps it many times a second, which used to cost one round trip per tick.
+  // It now settles on the trailing edge of a burst instead.
+  let signalRevision = "";
+  let activityRevision = "";
+  for (const thread of threads) {
+    signalRevision += `${thread.id}\u001f${thread.hasPendingInteraction ? 1 : 0}${isWorking(thread) ? 1 : 0}\u001e`;
+    activityRevision += `${thread.updatedAt}\u001e`;
+  }
+
+  const lastSignalRevision = useRef(signalRevision);
+  const lastActivityRevision = useRef(activityRevision);
+  const coalesceTimer = useRef<number | null>(null);
+  const cancelCoalesced = useCallback(() => {
+    if (coalesceTimer.current === null) return;
+    window.clearTimeout(coalesceTimer.current);
+    coalesceTimer.current = null;
+  }, []);
+  useEffect(() => cancelCoalesced, [cancelCoalesced]);
+
   useEffect(() => {
-    if (threadListRevision === lastRevision.current) return;
-    lastRevision.current = threadListRevision;
+    if (signalRevision === lastSignalRevision.current) return;
+    lastSignalRevision.current = signalRevision;
+    // This refresh reports the newest `updatedAt` as well, so anything the
+    // coalesced timer was still holding would only be a duplicate.
+    lastActivityRevision.current = activityRevision;
+    cancelCoalesced();
     void refresh();
-  }, [refresh, threadListRevision]);
+  }, [activityRevision, cancelCoalesced, refresh, signalRevision]);
+
+  useEffect(() => {
+    if (activityRevision === lastActivityRevision.current) return;
+    lastActivityRevision.current = activityRevision;
+    // One timer per burst. Ticks that arrive while it is armed are already
+    // covered by the read it will make, and a tick arriving after it fires
+    // arms the next one, so the last tick of a burst is always followed by a
+    // read: the signal is delayed, never dropped.
+    if (coalesceTimer.current !== null) return;
+    coalesceTimer.current = window.setTimeout(() => {
+      coalesceTimer.current = null;
+      void refresh();
+    }, ACTIVITY_COALESCE_MS);
+  }, [activityRevision, refresh]);
 
   // Arm one timer for the soonest wake instead of polling: the shelf empties
   // the moment a snooze expires, and nothing ticks while nothing is snoozed.
@@ -269,12 +355,11 @@ export function useLifecycle(
     // updated when a timer fires, so arming from it after a long idle period
     // would schedule a new snooze far too late.
     const armedAt = Date.now();
-    const delay = nextWakeDelayMs(
-      [...rows.values()].flatMap((row) =>
-        row.snoozedUntil === null ? [] : [row.snoozedUntil],
-      ),
-      armedAt,
-    );
+    const wakeTimes: number[] = [];
+    for (const row of rows.values()) {
+      if (row.snoozedUntil !== null) wakeTimes.push(row.snoozedUntil);
+    }
+    const delay = nextWakeDelayMs(wakeTimes, armedAt);
     if (delay === null) return;
     const timer = window.setTimeout(() => setNow(Date.now()), delay);
     return () => window.clearTimeout(timer);

@@ -102,6 +102,32 @@ describe("workflow activity store", () => {
     closeWorkflowActivityStore(sidebarDbPath);
   });
 
+  it("reopens the store when the sibling plugin replaces the file", () => {
+    const sidebarDbPath = tempSidebarDbPath();
+    const sourcePath = workflowStorePath(sidebarDbPath);
+    const insertSql = `INSERT INTO workflow_runs
+         (id, origin_thread_id, name, status, phase, started_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`;
+    const first = createWorkflowDb(sidebarDbPath);
+    first.prepare(insertSql).run("run_old", "thr_old", "Old", "running", null, 10, 10);
+    expect(
+      readWorkflowActivity(sourcePath, openDatabase, 100).runs.map((run) => run.id),
+    ).toEqual(["run_old"]);
+    first.close();
+
+    // A reinstall or a restore leaves the path in place. The cached handle
+    // holds the unlinked file open, so it must be dropped on the next read.
+    rmSync(sourcePath);
+    const second = createWorkflowDb(sidebarDbPath);
+    second.prepare(insertSql).run("run_new", "thr_new", "New", "queued", null, 20, 20);
+
+    expect(
+      readWorkflowActivity(sourcePath, openDatabase, 200).runs.map((run) => run.id),
+    ).toEqual(["run_new"]);
+    second.close();
+    closeWorkflowActivityStore(sidebarDbPath);
+  });
+
   it("reports a missing file separately from a broken schema", () => {
     const sidebarDbPath = tempSidebarDbPath();
     const sourcePath = workflowStorePath(sidebarDbPath);

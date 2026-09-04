@@ -1,4 +1,5 @@
 import {
+  memo,
   useState,
   useSyncExternalStore,
   type CSSProperties,
@@ -260,11 +261,17 @@ export function OpenPanesRow({
   const entries = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const [expanded, toggle] = useLiveStripExpanded("openPanes");
   const [columnsExpanded, setColumnsExpanded] = useState(readColumnsExpanded);
+  // Fewer than two panes is not a split, so nothing below has to be built.
+  if (entries.length < 2) return null;
   const chips = chipsFromEntries(entries, threads);
   if (chips.length < 2) return null;
-  const columns = buildColumns(entries, threads, workflowRows, (thread) =>
-    liveStripAccent(thread, accentFor, projectDecor),
-  );
+  // The column view models cost a pass over every pane and its runs. Build
+  // them only when the columns are actually on screen.
+  const columns = columnsExpanded
+    ? buildColumns(entries, threads, workflowRows, (thread) =>
+        liveStripAccent(thread, accentFor, projectDecor),
+      )
+    : [];
 
   return (
     <LiveStripSection
@@ -531,11 +538,17 @@ export function NowRow({
   );
 }
 
-export function LiveStrip(props: LiveStripCommonProps & { now: number }) {
+/**
+ * Memoised: the strip re-derives its chips, columns and "Now" rows from the
+ * whole thread list, and the list above it re-renders on every push and tick.
+ */
+export const LiveStrip = memo(function LiveStrip(
+  props: LiveStripCommonProps & { now: number },
+) {
   return (
     <>
       <OpenPanesRow {...props} />
       <NowRow {...props} />
     </>
   );
-}
+});

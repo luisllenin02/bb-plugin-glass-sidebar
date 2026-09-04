@@ -58,11 +58,17 @@ export function useInboxReorder(
     () => orderInboxThreads(inboxThreads, optimisticIds ?? storedIds),
     [inboxThreads, optimisticIds, storedIds],
   );
-  const ids = threads.map((thread) => thread.id);
+  const ids = useMemo(() => threads.map((thread) => thread.id), [threads]);
+  // Read through a ref so `reorder` — and the API object built on it — does
+  // not get a new identity on every render just to see the current order.
+  const idsRef = useRef(ids);
+  idsRef.current = ids;
 
   const reorder = useCallback(
     async (nextIds: readonly string[]): Promise<boolean> => {
-      if (inFlight.current || orderKey(nextIds) === orderKey(ids)) return false;
+      if (inFlight.current || orderKey(nextIds) === orderKey(idsRef.current)) {
+        return false;
+      }
       inFlight.current = true;
       setIsReordering(true);
       setOptimisticIds([...nextIds]);
@@ -85,8 +91,12 @@ export function useInboxReorder(
         setIsReordering(false);
       }
     },
-    [ids, rpc],
+    [rpc],
   );
 
-  return { threads, ids, isReordering, reorder };
+  // One object per real change: `useShelfReorder` memoises its controls on it.
+  return useMemo(
+    () => ({ threads, ids, isReordering, reorder }),
+    [ids, isReordering, reorder, threads],
+  );
 }

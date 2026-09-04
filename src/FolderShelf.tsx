@@ -15,7 +15,6 @@ import type { Folder } from "./organization";
 import { ProjectGlyph } from "./ProjectGlyph";
 import type { OrganizationAccess, ProjectDecorEntry } from "./row-props";
 import type { FolderDragApi } from "./useFolderDrag";
-import type { ThreadReorderControls } from "./ThreadCard";
 
 const NO_PROJECT_DECOR: Readonly<Record<string, ProjectDecorEntry>> =
   Object.freeze({});
@@ -35,10 +34,12 @@ export function FolderShelf({
   entries: readonly FolderEntry<PluginSidebarThread>[];
   organization: OrganizationAccess;
   drag: FolderDragApi;
-  renderThread: (
-    thread: PluginSidebarThread,
-    controls: ThreadReorderControls,
-  ) => ReactNode;
+  /**
+   * The list renders the card itself, drag controls included: it already has
+   * to compose folder and shelf reordering per row, so the shelf does not
+   * build a second set of controls the caller would throw away.
+   */
+  renderThread: (thread: PluginSidebarThread) => ReactNode;
   activeProjectId: string | null;
   renamingFolderId: string | null;
   onRenamingFolderChange: (folderId: string | null) => void;
@@ -118,7 +119,7 @@ export function FolderShelf({
                     return (
                       <Fragment key={thread.id}>
                         {before ? <InsertionLine /> : null}
-                        {renderThread(thread, drag.threadControls(thread.id))}
+                        {renderThread(thread)}
                         {after ? <InsertionLine /> : null}
                       </Fragment>
                     );

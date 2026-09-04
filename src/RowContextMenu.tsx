@@ -59,14 +59,19 @@ export function RowContextMenu({
   projectDecor?: ProjectDecorEntry | null;
 }) {
   const actions = useSidebarThreadActions();
-  const folder = organization?.folderOf(thread.id) ?? null;
+  const [open, setOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  // Every row wraps itself in this menu, so nothing here may cost anything
+  // until the menu is actually open: the items, the four submenus and the
+  // icon picker are built on open and thrown away on close.
+  const folder = open ? organization?.folderOf(thread.id) ?? null : null;
   const effectiveDecor = projectDecor ?? decor?.decorFor(thread.projectId) ?? null;
 
   return (
     <>
-      <ContextMenu.Root>
+      <ContextMenu.Root onOpenChange={setOpen}>
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
+      {open ? (
       <ContextMenu.Portal>
         <ContextMenu.Content
           aria-label="Thread actions"
@@ -141,14 +146,17 @@ export function RowContextMenu({
           </Item>
         </ContextMenu.Content>
       </ContextMenu.Portal>
+      ) : null}
       </ContextMenu.Root>
-      <IconPicker
-        open={projectPickerOpen}
-        onOpenChange={setProjectPickerOpen}
-        projectId={thread.projectId}
-        projectName={projectName ?? thread.projectId}
-        decor={effectiveDecor}
-      />
+      {projectPickerOpen ? (
+        <IconPicker
+          open
+          onOpenChange={setProjectPickerOpen}
+          projectId={thread.projectId}
+          projectName={projectName ?? thread.projectId}
+          decor={effectiveDecor}
+        />
+      ) : null}
     </>
   );
 }

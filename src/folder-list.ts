@@ -20,25 +20,28 @@ export function partitionByFolder<
   threads: readonly T[],
   organization: { folders: readonly Folder[] },
 ): { folderEntries: FolderEntry<T>[]; ungrouped: T[] } {
-  const visibleById = new Map(
-    threads
-      .filter((thread) => !thread.isArchived)
-      .map((thread) => [thread.id, thread]),
-  );
-  const groupedIds = new Set(
-    organization.folders.flatMap((folder) => folder.threadIds),
-  );
+  // Both indexes in one pass each: the previous filter/map/flatMap chain built
+  // three throwaway arrays the size of the list on every call, and this runs
+  // whenever the thread list changes.
+  const visibleById = new Map<string, T>();
+  for (const thread of threads) {
+    if (!thread.isArchived) visibleById.set(thread.id, thread);
+  }
+  const groupedIds = new Set<string>();
+  for (const folder of organization.folders) {
+    for (const threadId of folder.threadIds) groupedIds.add(threadId);
+  }
   let remainingMembers = MAX_VISIBLE_FOLDER_MEMBERS;
   const folderEntries = [...organization.folders]
     .sort((left, right) => left.sortIndex - right.sortIndex)
     .slice(0, MAX_VISIBLE_FOLDERS)
     .map((folder) => {
-      const members = folder.threadIds
-        .flatMap((threadId) => {
-          const thread = visibleById.get(threadId);
-          return thread ? [thread] : [];
-        })
-        .slice(0, remainingMembers);
+      const members: T[] = [];
+      for (const threadId of folder.threadIds) {
+        if (members.length >= remainingMembers) break;
+        const thread = visibleById.get(threadId);
+        if (thread) members.push(thread);
+      }
       remainingMembers -= members.length;
       return { folder, members };
     });

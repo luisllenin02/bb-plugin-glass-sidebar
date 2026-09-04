@@ -13,6 +13,22 @@ import {
   SIDEBAR_SETTINGS_CHANNEL,
 } from "./sidebar-settings";
 
+/**
+ * Every field of `SettingsAccess` is a primitive, so one key-by-key pass
+ * settles it. Settings are re-read on the settings channel, on every
+ * visibility flip and on the first host revision, and they almost never differ
+ * between those reads; skipping the identical ones keeps one object identity
+ * and, with it, one `JSON.stringify` into `localStorage` per real change.
+ */
+function sameSettings(left: SettingsAccess, right: SettingsAccess): boolean {
+  if (left === right) return true;
+  const keys = Object.keys(right) as (keyof SettingsAccess)[];
+  return (
+    keys.length === Object.keys(left).length &&
+    keys.every((key) => left[key] === right[key])
+  );
+}
+
 export function useSidebarSettings(): SettingsAccess {
   const rpc = useRpc<typeof glassSidebarRpcContract>();
   const { status, threads } = useSidebarThreads();
@@ -22,19 +38,26 @@ export function useSidebarSettings(): SettingsAccess {
   const mountedRevision = useRef<string | null>(null);
   const loaded = useRef(false);
 
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const load = useCallback(async () => {
     try {
       const result = await rpc.call("getSidebarSettings", {});
+      // The first answer is always written through, so the cross-mount caches
+      // are populated even when the backend agrees with the defaults.
+      const isFirstLoad = !loaded.current;
       loaded.current = true;
-      setSettings(cacheSidebarSettings(rpc, result));
+      if (!isFirstLoad && sameSettings(settingsRef.current, result)) return;
+      const stable = cacheSidebarSettings(rpc, result);
+      settingsRef.current = stable;
+      setSettings(stable);
     } catch {
       // Keep the synchronous cache/defaults when the backend is still reloading.
     }
   }, [rpc]);
 
-  const revision = `${status}:${threads
-    .map((thread) => `${thread.id}:${thread.updatedAt}`)
-    .join("\0")}`;
+  let revision = status;
+  for (const thread of threads) revision += `\0${thread.id}:${thread.updatedAt}`;
   useEffect(() => {
     if (mountedRevision.current === null) {
       mountedRevision.current = revision;

@@ -20,10 +20,7 @@ import {
   type Folder,
   type Organization,
 } from "./src/organization";
-import {
-  PROJECT_ICON_COLOR_NAMES,
-  type ProjectIconColorName,
-} from "./src/accent";
+import { PROJECT_ICON_COLOR_NAMES } from "./src/accent";
 import {
   readTopLevelListing,
   reconcileProjectIcons,
@@ -31,10 +28,7 @@ import {
   type AutoIconSuggestion,
 } from "./src/auto-assign";
 import { searchIcons, type CatalogEntry } from "./src/icon-search";
-import {
-  createProjectDecorStore,
-  type ProjectDecorStore,
-} from "./src/project-decor-store";
+import { createProjectDecorStore } from "./src/project-decor-store";
 import {
   closeWorkflowActivitySource,
   readWorkflowActivity,
@@ -57,7 +51,6 @@ import {
   formatImportReport,
   importDataDir,
   importGlassSidebarData,
-  importSourcePaths,
 } from "./src/import-data";
 
 const CLI_USAGE = `Usage:
@@ -706,12 +699,8 @@ interface StoredAccentRow {
 
 type ProjectGlyph = ReadonlyArray<[string, Record<string, unknown>]>;
 
-interface IconAssets {
-  catalog: CatalogEntry[];
-  glyphs: Record<string, ProjectGlyph>;
-}
-
-let iconAssetsPromise: Promise<IconAssets> | null = null;
+let iconCatalogPromise: Promise<CatalogEntry[]> | null = null;
+let iconGlyphsPromise: Promise<Record<string, ProjectGlyph>> | null = null;
 
 async function readAssetText(name: string): Promise<string> {
   try {
@@ -724,15 +713,21 @@ async function readAssetText(name: string): Promise<string> {
   }
 }
 
-function loadIconAssets(): Promise<IconAssets> {
-  iconAssetsPromise ??= Promise.all([
-    readAssetText("icon-catalog.json"),
-    readAssetText("icon-catalog-glyphs.json"),
-  ]).then(([catalogJson, glyphJson]) => ({
-    catalog: JSON.parse(catalogJson) as CatalogEntry[],
-    glyphs: JSON.parse(glyphJson) as Record<string, ProjectGlyph>,
-  }));
-  return iconAssetsPromise;
+// Read and parsed once each, and separately: a mount needs the drawings for
+// the projects on screen, and never the half-megabyte search catalog that only
+// the icon picker opens.
+function loadIconCatalog(): Promise<CatalogEntry[]> {
+  iconCatalogPromise ??= readAssetText("icon-catalog.json").then(
+    (json) => JSON.parse(json) as CatalogEntry[],
+  );
+  return iconCatalogPromise;
+}
+
+function loadIconGlyphs(): Promise<Record<string, ProjectGlyph>> {
+  iconGlyphsPromise ??= readAssetText("icon-catalog-glyphs.json").then(
+    (json) => JSON.parse(json) as Record<string, ProjectGlyph>,
+  );
+  return iconGlyphsPromise;
 }
 
 function newFolderId(): string {
@@ -775,17 +770,43 @@ export default async function plugin(bb: BbPluginApi) {
       fileMustExist: true,
     });
   bb.storage.migrate(db, glassSidebarMigrations);
+  /**
+   * better-sqlite3 compiles the SQL text on every `prepare`, and these read
+   * paths run on every thread-list revision. Each distinct statement is
+   * compiled once, on first use — lazily, so a table a later migration owns
+   * is still only touched when a caller asks for it — and then reused for the
+   * life of the plugin.
+   */
+  type CachedStatement = Database.Statement<unknown[], unknown>;
+  const statements = new Map<string, CachedStatement>();
+  const sql = (source: string): CachedStatement => {
+    let statement = statements.get(source);
+    if (statement === undefined) {
+      statement = db.prepare<unknown[], unknown>(source);
+      statements.set(source, statement);
+    }
+    return statement;
+  };
   let awaitingLegacyImport =
-    !db.prepare(`SELECT 1 FROM legacy_import_state WHERE id = 1`).get();
+    !sql(`SELECT 1 FROM legacy_import_state WHERE id = 1`).get();
   let firstProjectDecorRead = true;
   const projectDecorStore = createProjectDecorStore(db);
   const projectSuggestions = new Map<string, AutoIconSuggestion>();
   bb.onDispose(() => closeWorkflowActivitySource(workflowSourcePath));
 
+  // Both views are rebuilt from SQLite on every read, and every path that
+  // writes their tables ends in one of these two publishes — so the publish is
+  // also the one place the memoised view has to be dropped. A client refresh
+  // that follows a signal then costs one object, not four table scans.
+  let organizationView: Organization | null = null;
+  let projectDecorViewCache: ReturnType<typeof buildProjectDecorView> | null =
+    null;
   const publishOrganization = (reason: string) => {
+    organizationView = null;
     bb.realtime.publish(ORGANIZATION_CHANNEL, { reason });
   };
   const publishProjectDecor = (reason: string) => {
+    projectDecorViewCache = null;
     bb.realtime.publish("project-decor", { reason });
   };
 
@@ -845,11 +866,13 @@ export default async function plugin(bb: BbPluginApi) {
         if (changed.has("inbox_order")) {
           bb.realtime.publish(INBOX_ORDER_CHANNEL, { reason: "import" });
         }
-        db.prepare(
+        sql(
           `INSERT INTO legacy_import_state (id, completed_at) VALUES (1, ?)
            ON CONFLICT(id) DO UPDATE SET completed_at = excluded.completed_at`,
         ).run(Date.now());
         awaitingLegacyImport = false;
+        // Imported lifecycle rows and settings change what the policy decides.
+        forceNextPolicyPass();
         const reconciled = await reconcileProjects("import");
         firstProjectDecorRead = false;
         if (changed.has("project_decor") && !reconciled.changed) {
@@ -871,23 +894,38 @@ export default async function plugin(bb: BbPluginApi) {
   const defaultProjectHostIds = new Map<string, Promise<string | null>>();
   const readProjectIconOverride = (projectId: string): string | null =>
     (
-      db
-        .prepare(
-          `SELECT project_id, path, updated_at FROM project_icons
-           WHERE project_id = ?`,
-        )
-        .get(projectId) as StoredProjectIconRow | undefined
+      sql(
+        `SELECT project_id, path, updated_at FROM project_icons
+         WHERE project_id = ?`,
+      ).get(projectId) as StoredProjectIconRow | undefined
     )?.path ?? null;
+  const readProjectIconOverrides = (): Map<string, string> =>
+    new Map(
+      (
+        sql(`SELECT project_id, path FROM project_icons`).all() as Array<{
+          project_id: string;
+          path: string;
+        }>
+      ).map((row) => [row.project_id, row.path]),
+    );
+  // Only the name is wanted here, and an upload row carries up to a megabyte
+  // of base64 beside it.
+  const readProjectIconUploadNames = (): Map<string, string> =>
+    new Map(
+      (
+        sql(
+          `SELECT project_id, filename FROM project_icon_uploads`,
+        ).all() as Array<{ project_id: string; filename: string }>
+      ).map((row) => [row.project_id, row.filename]),
+    );
   const readProjectIconUpload = (
     projectId: string,
   ): StoredProjectIconUploadRow | null =>
-    (db
-      .prepare(
-        `SELECT project_id, filename, mime_type, content_base64,
-                size_bytes, updated_at FROM project_icon_uploads
-         WHERE project_id = ?`,
-      )
-      .get(projectId) as StoredProjectIconUploadRow | undefined) ?? null;
+    (sql(
+      `SELECT project_id, filename, mime_type, content_base64,
+              size_bytes, updated_at FROM project_icon_uploads
+       WHERE project_id = ?`,
+    ).get(projectId) as StoredProjectIconUploadRow | undefined) ?? null;
   const clearProjectIconCache = (projectId: string): void => {
     for (const key of projectIconCache.keys()) {
       if (key.startsWith(`${projectId}\0`)) projectIconCache.delete(key);
@@ -1096,22 +1134,23 @@ export default async function plugin(bb: BbPluginApi) {
     for (const [projectId, suggestion] of Object.entries(result.suggestions)) {
       projectSuggestions.set(projectId, suggestion);
     }
+    // The suggestions are part of the decor view and land after the
+    // reconcile's own publish, so the view is dropped again here.
+    projectDecorViewCache = null;
     return result;
   };
 
   const listMemberIds = (folderId: string): string[] =>
     (
-      db
-        .prepare(
-          `SELECT thread_id, folder_id, sort_index FROM folder_members
-           WHERE folder_id = ? ORDER BY sort_index, thread_id`,
-        )
-        .all(folderId) as StoredMemberRow[]
+      sql(
+        `SELECT thread_id, folder_id, sort_index FROM folder_members
+         WHERE folder_id = ? ORDER BY sort_index, thread_id`,
+      ).all(folderId) as StoredMemberRow[]
     ).map((row) => row.thread_id);
 
   const writeMemberOrder = (folderId: string, threadIds: readonly string[]) => {
-    db.prepare(`DELETE FROM folder_members WHERE folder_id = ?`).run(folderId);
-    const insert = db.prepare(
+    sql(`DELETE FROM folder_members WHERE folder_id = ?`).run(folderId);
+    const insert = sql(
       `INSERT INTO folder_members (thread_id, folder_id, sort_index)
        VALUES (?, ?, ?)`,
     );
@@ -1121,25 +1160,21 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const requireFolder = (folderId: string) => {
-    const found = db
-      .prepare(`SELECT 1 AS found FROM thread_folders WHERE id = ?`)
-      .get(folderId) as { found: number } | undefined;
+    const found = sql(
+      `SELECT 1 AS found FROM thread_folders WHERE id = ?`,
+    ).get(folderId) as { found: number } | undefined;
     if (!found) throw new Error(`Unknown folder: ${folderId}`);
   };
 
-  const readOrganization = (): Organization => {
-    const folderRows = db
-      .prepare(
-        `SELECT id, name, color_index, custom_color, collapsed, sort_index
-         FROM thread_folders ORDER BY sort_index, created_at, id`,
-      )
-      .all() as StoredFolderRow[];
-    const memberRows = db
-      .prepare(
-        `SELECT thread_id, folder_id, sort_index FROM folder_members
-         ORDER BY folder_id, sort_index, thread_id`,
-      )
-      .all() as StoredMemberRow[];
+  const buildOrganization = (): Organization => {
+    const folderRows = sql(
+      `SELECT id, name, color_index, custom_color, collapsed, sort_index
+       FROM thread_folders ORDER BY sort_index, created_at, id`,
+    ).all() as StoredFolderRow[];
+    const memberRows = sql(
+      `SELECT thread_id, folder_id, sort_index FROM folder_members
+       ORDER BY folder_id, sort_index, thread_id`,
+    ).all() as StoredMemberRow[];
     const members: Record<string, string> = {};
     const threadIdsByFolder = new Map<string, string[]>();
     for (const row of memberRows) {
@@ -1153,11 +1188,9 @@ export default async function plugin(bb: BbPluginApi) {
       table: "thread_accents" | "project_accents",
       key: "thread_id" | "project_id",
     ) => {
-      const rows = db
-        .prepare(
-          `SELECT ${key} AS owner_id, color_index, custom_color FROM ${table}`,
-        )
-        .all() as StoredAccentRow[];
+      const rows = sql(
+        `SELECT ${key} AS owner_id, color_index, custom_color FROM ${table}`,
+      ).all() as StoredAccentRow[];
       return Object.fromEntries(
         rows.map((row) => [
           row.owner_id,
@@ -1182,25 +1215,26 @@ export default async function plugin(bb: BbPluginApi) {
     };
   };
 
+  const readOrganization = (): Organization =>
+    (organizationView ??= buildOrganization());
+
   const readInboxOrder = (): string[] =>
     (
-      db
-        .prepare(
-          `SELECT thread_id FROM inbox_order
-           ORDER BY sort_index ASC, thread_id ASC`,
-        )
-        .all() as Array<{ thread_id: string }>
+      sql(
+        `SELECT thread_id FROM inbox_order
+         ORDER BY sort_index ASC, thread_id ASC`,
+      ).all() as Array<{ thread_id: string }>
     ).map((row) => row.thread_id);
 
   const replaceInboxOrder = db.transaction((inboxThreadIds: string[]) => {
-    db.prepare(`DELETE FROM inbox_order`).run();
-    const insert = db.prepare(
+    sql(`DELETE FROM inbox_order`).run();
+    const insert = sql(
       `INSERT INTO inbox_order (thread_id, sort_index) VALUES (?, ?)`,
     );
     inboxThreadIds.forEach((threadId, index) => insert.run(threadId, index));
   });
 
-  const projectDecorView = () => {
+  const buildProjectDecorView = () => {
     const rows = projectDecorStore.list();
     return {
       projects: Object.fromEntries(
@@ -1223,6 +1257,9 @@ export default async function plugin(bb: BbPluginApi) {
     };
   };
 
+  const projectDecorView = () =>
+    (projectDecorViewCache ??= buildProjectDecorView());
+
   const lifecycleColumns = `thread_id, settled_at, settled_override,
                             snoozed_until, snoozed_at`;
   const toLifecycleRow = (row: LifecycleDbRow): StoredLifecycleRow => ({
@@ -1235,17 +1272,14 @@ export default async function plugin(bb: BbPluginApi) {
 
   const readAllLifecycle = (): StoredLifecycleRow[] =>
     (
-      db
-        .prepare(`SELECT ${lifecycleColumns} FROM thread_lifecycle`)
+      sql(`SELECT ${lifecycleColumns} FROM thread_lifecycle`)
         .all() as LifecycleDbRow[]
     ).map(toLifecycleRow);
 
   const readLifecycle = (threadId: string): StoredLifecycleRow | null => {
-    const row = db
-      .prepare(
-        `SELECT ${lifecycleColumns} FROM thread_lifecycle WHERE thread_id = ?`,
-      )
-      .get(threadId) as LifecycleDbRow | undefined;
+    const row = sql(
+      `SELECT ${lifecycleColumns} FROM thread_lifecycle WHERE thread_id = ?`,
+    ).get(threadId) as LifecycleDbRow | undefined;
     return row ? toLifecycleRow(row) : null;
   };
 
@@ -1256,7 +1290,7 @@ export default async function plugin(bb: BbPluginApi) {
    */
   const writeLifecycle = (row: StoredLifecycleRow, publish = true): void => {
     const legacy = legacyLifecycleColumns(row, Date.now());
-    db.prepare(
+    sql(
       `INSERT INTO thread_lifecycle
          (thread_id, settled_at, settled_override, snoozed_until, snoozed_at,
           state, wake_at, updated_at)
@@ -1295,7 +1329,7 @@ export default async function plugin(bb: BbPluginApi) {
     bb.realtime.publish(LIFECYCLE_CHANNEL, { threadIds });
   };
 
-  const deleteLifecycle = db.prepare(
+  const deleteLifecycle = sql(
     `DELETE FROM thread_lifecycle WHERE thread_id = ?`,
   );
 
@@ -1323,15 +1357,13 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const readSidebarSettings = (): SidebarSettingsValues => {
-    const row = db
-      .prepare(
-        `SELECT snooze_presets, inactive_threads_enabled,
-                inactive_after_hours, auto_settle_inactive,
-                auto_settle_after_days, auto_settle_on_merge,
-                auto_project_colours
-         FROM sidebar_settings WHERE id = 1`,
-      )
-      .get() as SidebarSettingsDbRow | undefined;
+    const row = sql(
+      `SELECT snooze_presets, inactive_threads_enabled,
+              inactive_after_hours, auto_settle_inactive,
+              auto_settle_after_days, auto_settle_on_merge,
+              auto_project_colours
+       FROM sidebar_settings WHERE id = 1`,
+    ).get() as SidebarSettingsDbRow | undefined;
     return row
       ? {
           snoozePresets: row.snooze_presets,
@@ -1346,7 +1378,7 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const writeSidebarSettings = (values: SidebarSettingsValues): void => {
-    db.prepare(
+    sql(
       `INSERT INTO sidebar_settings (
          id, snooze_presets, inactive_threads_enabled,
          inactive_after_hours, auto_settle_inactive,
@@ -1374,13 +1406,11 @@ export default async function plugin(bb: BbPluginApi) {
 
   const readAutoSettleSettings = () => {
     try {
-      const row = db
-        .prepare(
-          `SELECT auto_settle_inactive, auto_settle_after_days,
-                  auto_settle_on_merge
-             FROM sidebar_settings WHERE id = 1`,
-        )
-        .get() as AutoSettleSettingsRow | undefined;
+      const row = sql(
+        `SELECT auto_settle_inactive, auto_settle_after_days,
+                auto_settle_on_merge
+           FROM sidebar_settings WHERE id = 1`,
+      ).get() as AutoSettleSettingsRow | undefined;
       if (!row) return DEFAULT_AUTO_SETTLE_SETTINGS;
       return {
         autoSettleInactive: row.auto_settle_inactive === 1,
@@ -1409,14 +1439,39 @@ export default async function plugin(bb: BbPluginApi) {
     return threads;
   };
 
+  /**
+   * One host round trip per environment is the expensive half of a policy
+   * pass, and several passes can run inside one burst — a released live hold,
+   * the generation follow-up it chains, a second client mounting. Results are
+   * held briefly so the burst costs one lookup per environment instead of one
+   * per pass. `unknown` is never cached: it means the lookup failed, the
+   * policy keeps the current state on it, and the next pass must be free to
+   * ask again.
+   */
+  const PULL_REQUEST_CACHE_MS = 60_000;
+  const pullRequestCache = new Map<
+    string,
+    { expiresAt: number; pullRequest: AutoSettlePullRequest }
+  >();
+
   const loadPullRequests = async (environmentIds: readonly string[]) => {
+    const startedAt = Date.now();
+    for (const [environmentId, entry] of pullRequestCache) {
+      if (entry.expiresAt <= startedAt) pullRequestCache.delete(environmentId);
+    }
     const results = new Map<string, AutoSettlePullRequest>();
+    const pending: string[] = [];
+    for (const environmentId of environmentIds) {
+      const cached = pullRequestCache.get(environmentId);
+      if (cached) results.set(environmentId, cached.pullRequest);
+      else pending.push(environmentId);
+    }
     let nextIndex = 0;
     const workers = Array.from(
-      { length: Math.min(4, environmentIds.length) },
+      { length: Math.min(4, pending.length) },
       async () => {
-        while (nextIndex < environmentIds.length) {
-          const environmentId = environmentIds[nextIndex++]!;
+        while (nextIndex < pending.length) {
+          const environmentId = pending[nextIndex++]!;
           try {
             const result = await bb.sdk.environments.pullRequest({
               environmentId,
@@ -1434,6 +1489,13 @@ export default async function plugin(bb: BbPluginApi) {
             }
           } catch {
             results.set(environmentId, { outcome: "unknown" });
+          }
+          const resolved = results.get(environmentId);
+          if (resolved && resolved.outcome !== "unknown") {
+            pullRequestCache.set(environmentId, {
+              expiresAt: Date.now() + PULL_REQUEST_CACHE_MS,
+              pullRequest: resolved,
+            });
           }
         }
       },
@@ -1495,14 +1557,16 @@ export default async function plugin(bb: BbPluginApi) {
    */
   let clientLiveGeneration = 0;
 
-  const setClientLive = (threadId: string, live: boolean): void => {
+  /** Returns whether this report actually moved the membership. */
+  const setClientLive = (threadId: string, live: boolean): boolean => {
     const changed = live
       ? !clientLiveThreadIds.has(threadId)
       : clientLiveThreadIds.has(threadId);
-    if (!changed) return;
+    if (!changed) return false;
     if (live) clientLiveThreadIds.add(threadId);
     else clientLiveThreadIds.delete(threadId);
     clientLiveGeneration += 1;
+    return true;
   };
 
   /**
@@ -1513,10 +1577,13 @@ export default async function plugin(bb: BbPluginApi) {
    */
   const recordActivitySignals = (
     signals: readonly LiveSignal[],
-  ): void => {
+  ): boolean => {
+    let releasedLiveHold = false;
     for (const signal of signals) {
-      setClientLive(signal.threadId, signal.live);
+      const changed = setClientLive(signal.threadId, signal.live);
+      if (changed && !signal.live) releasedLiveHold = true;
     }
+    return releasedLiveHold;
   };
 
   /**
@@ -1558,19 +1625,47 @@ export default async function plugin(bb: BbPluginApi) {
   /** Membership generation represented by the in-flight decision's live set. */
   let policyDecisionGeneration: number | null = null;
   /**
+   * A full pass pages every non-archived thread and then asks the host for one
+   * pull request per environment, so it is far too expensive to run on every
+   * `listLifecycle` — the client re-reads on every thread-list revision, which
+   * ticks continuously while an agent streams. `lastPolicyPassAt` is the
+   * completion time of the newest pass (successful or failed, so a broken host
+   * cannot be hammered); `POLICY_PASS_TTL_MS` is the shortest interval between
+   * two read-driven passes. Zero means "due now": the state after load, and
+   * the state a settings change or a data import restores.
+   */
+  const POLICY_PASS_TTL_MS = 90_000;
+  let lastPolicyPassAt = 0;
+  /**
+   * Bumped by every force. A pass reads the settings it decides on before its
+   * first await, so a force that arrives while it is in flight must survive
+   * its completion — otherwise the new settings would wait out the cadence.
+   */
+  let policyForceGeneration = 0;
+  const forceNextPolicyPass = (): void => {
+    lastPolicyPassAt = 0;
+    policyForceGeneration += 1;
+  };
+  /**
    * Idempotent: it publishes at most once, and only when it changed state, so
    * a refresh triggered by its own signal cannot loop. Concurrent callers
    * coalesce onto one pass, which is what keeps a freshly opened client from
    * repeating the thread and PR work. If client-live membership changes after
    * the pass freezes its decision set, the stale pass applies nothing and its
    * promise chains exactly one fresh pass derived from current state.
+   *
+   * Live signals are recorded by the caller, before it decides whether a pass
+   * is due, so a report always lands — and always invalidates an in-flight
+   * pass — even when the answer itself is served from stored rows.
    */
-  const evaluatePolicies = (
-    signals: readonly LiveSignal[] = [],
-  ): Promise<string[]> => {
-    recordActivitySignals(signals);
+  const evaluatePolicies = (): Promise<string[]> => {
     if (policyEvaluation !== null) return policyEvaluation;
 
+    const forcedGeneration = policyForceGeneration;
+    const stampPassCompletion = () => {
+      lastPolicyPassAt =
+        policyForceGeneration === forcedGeneration ? Date.now() : 0;
+    };
     const pass = (async () => {
       const configured = readAutoSettleSettings();
       const threads = await loadPolicyThreads();
@@ -1634,6 +1729,7 @@ export default async function plugin(bb: BbPluginApi) {
         policyDecisionGeneration !== clientLiveGeneration;
       policyEvaluation = null;
       policyDecisionGeneration = null;
+      stampPassCompletion();
       if (!needsFollowUp) return changedThreadIds;
       const followUpChangedThreadIds = await evaluatePolicies();
       return [
@@ -1642,6 +1738,7 @@ export default async function plugin(bb: BbPluginApi) {
     }, (error: unknown) => {
       policyEvaluation = null;
       policyDecisionGeneration = null;
+      stampPassCompletion();
       throw error;
     });
     return policyEvaluation;
@@ -1670,7 +1767,7 @@ export default async function plugin(bb: BbPluginApi) {
       return projectDecorView();
     },
     getProjectGlyphs: async ({ projectIds }) => {
-      const { glyphs } = await loadIconAssets();
+      const glyphs = await loadIconGlyphs();
       const iconNames = new Set(
         projectIds
           .map((projectId) => projectDecorStore.get(projectId)?.icon)
@@ -1685,12 +1782,15 @@ export default async function plugin(bb: BbPluginApi) {
       };
     },
     listIconCatalog: async ({ query, category }) => {
-      const assets = await loadIconAssets();
-      const found = searchIcons(assets.catalog, query, category);
+      const [catalog, glyphs] = await Promise.all([
+        loadIconCatalog(),
+        loadIconGlyphs(),
+      ]);
+      const found = searchIcons(catalog, query, category);
       return {
         icons: found.results.flatMap((entry) =>
-          assets.glyphs[entry.name]
-            ? [{ ...entry, tags: [...entry.tags], glyph: assets.glyphs[entry.name] }]
+          glyphs[entry.name]
+            ? [{ ...entry, tags: [...entry.tags], glyph: glyphs[entry.name] }]
             : [],
         ),
         total: found.total,
@@ -1731,12 +1831,10 @@ export default async function plugin(bb: BbPluginApi) {
       const id = newFolderId();
       const uniqueThreadIds = [...new Set(threadIds)];
       const sortIndex = (
-        db
-          .prepare(
-            `SELECT COALESCE(MAX(sort_index), -1) + 1 AS next_index
-             FROM thread_folders`,
-          )
-          .get() as { next_index: number }
+        sql(
+          `SELECT COALESCE(MAX(sort_index), -1) + 1 AS next_index
+           FROM thread_folders`,
+        ).get() as { next_index: number }
       ).next_index;
       const folder: Folder = {
         id,
@@ -1748,7 +1846,7 @@ export default async function plugin(bb: BbPluginApi) {
         threadIds: uniqueThreadIds,
       };
       db.transaction(() => {
-        db.prepare(
+        sql(
           `INSERT INTO thread_folders
            (id, name, color_index, custom_color, collapsed, sort_index, created_at)
            VALUES (?, ?, ?, ?, 0, ?, ?)`,
@@ -1760,10 +1858,10 @@ export default async function plugin(bb: BbPluginApi) {
           folder.sortIndex,
           Date.now(),
         );
-        const clearMembership = db.prepare(
+        const clearMembership = sql(
           `DELETE FROM folder_members WHERE thread_id = ?`,
         );
-        const insertMembership = db.prepare(
+        const insertMembership = sql(
           `INSERT INTO folder_members (thread_id, folder_id, sort_index)
            VALUES (?, ?, ?)`,
         );
@@ -1777,7 +1875,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     renameFolder: ({ folderId, name }) => {
       requireFolder(folderId);
-      db.prepare(`UPDATE thread_folders SET name = ? WHERE id = ?`).run(
+      sql(`UPDATE thread_folders SET name = ? WHERE id = ?`).run(
         name,
         folderId,
       );
@@ -1786,7 +1884,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     setFolderColor: ({ folderId, colorIndex, customColor }) => {
       requireFolder(folderId);
-      db.prepare(
+      sql(
         `UPDATE thread_folders SET color_index = ?, custom_color = ? WHERE id = ?`,
       ).run(colorIndex, normalizeColor(customColor), folderId);
       publishOrganization("setFolderColor");
@@ -1794,7 +1892,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     setFolderCollapsed: ({ folderId, collapsed }) => {
       requireFolder(folderId);
-      db.prepare(`UPDATE thread_folders SET collapsed = ? WHERE id = ?`).run(
+      sql(`UPDATE thread_folders SET collapsed = ? WHERE id = ?`).run(
         collapsed ? 1 : 0,
         folderId,
       );
@@ -1803,12 +1901,12 @@ export default async function plugin(bb: BbPluginApi) {
     },
     reorderFolders: ({ folderIds }) => {
       const storedIds = (
-        db.prepare(`SELECT id FROM thread_folders`).all() as { id: string }[]
+        sql(`SELECT id FROM thread_folders`).all() as { id: string }[]
       ).map((row) => row.id);
       if (!sameIdSet(folderIds, storedIds)) {
         throw new Error("reorderFolders requires the complete folder order");
       }
-      const update = db.prepare(
+      const update = sql(
         `UPDATE thread_folders SET sort_index = ? WHERE id = ?`,
       );
       db.transaction(() => {
@@ -1820,8 +1918,8 @@ export default async function plugin(bb: BbPluginApi) {
     deleteFolder: ({ folderId }) => {
       requireFolder(folderId);
       db.transaction(() => {
-        db.prepare(`DELETE FROM folder_members WHERE folder_id = ?`).run(folderId);
-        db.prepare(`DELETE FROM thread_folders WHERE id = ?`).run(folderId);
+        sql(`DELETE FROM folder_members WHERE folder_id = ?`).run(folderId);
+        sql(`DELETE FROM thread_folders WHERE id = ?`).run(folderId);
       })();
       publishOrganization("deleteFolder");
       return { ok: true as const };
@@ -1829,10 +1927,9 @@ export default async function plugin(bb: BbPluginApi) {
     moveThreadToFolder: ({ threadId, folderId, beforeThreadId }) => {
       if (folderId !== null) requireFolder(folderId);
       db.transaction(() => {
-        const previous = db
-          .prepare(`SELECT folder_id FROM folder_members WHERE thread_id = ?`)
+        const previous = sql(`SELECT folder_id FROM folder_members WHERE thread_id = ?`)
           .get(threadId) as { folder_id: string } | undefined;
-        db.prepare(`DELETE FROM folder_members WHERE thread_id = ?`).run(threadId);
+        sql(`DELETE FROM folder_members WHERE thread_id = ?`).run(threadId);
         if (previous) {
           writeMemberOrder(previous.folder_id, listMemberIds(previous.folder_id));
         }
@@ -1863,7 +1960,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
     setThreadAccent: ({ threadId, colorIndex, customColor }) => {
-      db.prepare(
+      sql(
         `INSERT INTO thread_accents (thread_id, color_index, custom_color)
          VALUES (?, ?, ?)
          ON CONFLICT(thread_id) DO UPDATE SET
@@ -1874,7 +1971,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
     setProjectAccent: ({ projectId, colorIndex, customColor }) => {
-      db.prepare(
+      sql(
         `INSERT INTO project_accents (project_id, color_index, custom_color)
          VALUES (?, ?, ?)
          ON CONFLICT(project_id) DO UPDATE SET
@@ -1905,19 +2002,24 @@ export default async function plugin(bb: BbPluginApi) {
     getSidebarSettings: () => readSidebarSettings(),
     updateSidebarSettings: (values) => {
       writeSidebarSettings(values);
+      // The policy runs on these values, so the next read re-evaluates rather
+      // than serving rows decided under the old ones.
+      forceNextPolicyPass();
       bb.realtime.publish(SIDEBAR_SETTINGS_CHANNEL, {});
       return readSidebarSettings();
     },
     listProjectIconSettings: async () => {
       const projects = await bb.sdk.projects.list();
+      const overrides = readProjectIconOverrides();
+      const uploadNames = readProjectIconUploadNames();
       return {
         projects: projects
           .filter((project) => project.kind === "standard")
           .map((project) => ({
             id: project.id,
             name: project.name,
-            customPath: readProjectIconOverride(project.id),
-            customUploadName: readProjectIconUpload(project.id)?.filename ?? null,
+            customPath: overrides.get(project.id) ?? null,
+            customUploadName: uploadNames.get(project.id) ?? null,
           })),
       };
     },
@@ -1953,18 +2055,18 @@ export default async function plugin(bb: BbPluginApi) {
       }
       db.transaction(() => {
         if (normalized === null) {
-          db.prepare(`DELETE FROM project_icons WHERE project_id = ?`).run(
+          sql(`DELETE FROM project_icons WHERE project_id = ?`).run(
             projectId,
           );
         } else {
-          db.prepare(
+          sql(
             `INSERT INTO project_icons (project_id, path, updated_at)
              VALUES (?, ?, ?)
              ON CONFLICT(project_id) DO UPDATE SET
                path = excluded.path, updated_at = excluded.updated_at`,
           ).run(projectId, normalized, Date.now());
         }
-        db.prepare(`DELETE FROM project_icon_uploads WHERE project_id = ?`).run(
+        sql(`DELETE FROM project_icon_uploads WHERE project_id = ?`).run(
           projectId,
         );
       })();
@@ -1990,7 +2092,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
       const resolvedMimeType = iconMimeType(normalizedFilename, mimeType);
       db.transaction(() => {
-        db.prepare(
+        sql(
           `INSERT INTO project_icon_uploads (
              project_id, filename, mime_type, content_base64,
              size_bytes, updated_at
@@ -2009,7 +2111,7 @@ export default async function plugin(bb: BbPluginApi) {
           bytes.byteLength,
           Date.now(),
         );
-        db.prepare(`DELETE FROM project_icons WHERE project_id = ?`).run(
+        sql(`DELETE FROM project_icons WHERE project_id = ?`).run(
           projectId,
         );
       })();
@@ -2022,19 +2124,38 @@ export default async function plugin(bb: BbPluginApi) {
       // failure must not cost the user their shelves, so it is logged and the
       // stored rows are answered either way.
       //
-      // The whole snapshot goes through, not just its live rows: a thread the
-      // client reported live earlier stays protected until a report says it
-      // has gone quiet, and this is the only place that report can arrive.
-      const activity = signals.map((signal) => ({
-        threadId: signal.threadId,
-        live: signal.hasPendingInteraction || signal.isWorking,
-      }));
-      try {
-        await evaluatePolicies(activity);
-      } catch (error) {
+      // The whole snapshot is recorded first, not just its live rows: a thread
+      // the client reported live earlier stays protected until a report says
+      // it has gone quiet, this is the only place that report can arrive, and
+      // a report that lands mid-pass still invalidates that pass.
+      const releasedLiveHold = recordActivitySignals(
+        signals.map((signal) => ({
+          threadId: signal.threadId,
+          live: signal.hasPendingInteraction || signal.isWorking,
+        })),
+      );
+      const logPolicyFailure = (error: unknown) => {
         bb.log.error(
           `Automatic settle evaluation failed: ${error instanceof Error ? error.message : String(error)}`,
         );
+      };
+      // Two reports can change what the policy decides: the first read after
+      // load (or after a settings change or import), and one that releases a
+      // live hold — the only transition that can newly park a thread. Those
+      // are answered after the pass, exactly as before. A merely stale TTL
+      // refreshes in the background instead: the answer is the stored rows,
+      // and anything the pass changes reaches every client through
+      // LIFECYCLE_CHANNEL, the same route the schedule's pass uses. Every
+      // other revision — the constant stream of `updatedAt` ticks while an
+      // agent works — costs one table read.
+      if (lastPolicyPassAt === 0 || releasedLiveHold) {
+        try {
+          await evaluatePolicies();
+        } catch (error) {
+          logPolicyFailure(error);
+        }
+      } else if (Date.now() - lastPolicyPassAt >= POLICY_PASS_TTL_MS) {
+        void evaluatePolicies().catch(logPolicyFailure);
       }
       return { rows: readAllLifecycle() };
     },
@@ -2130,16 +2251,16 @@ export default async function plugin(bb: BbPluginApi) {
   // Real work clears both kinds of manual settle override. The next quiet
   // period can then be judged against the current policies.
   bb.events.on("thread.active", ({ thread }) => {
-    clearSettlingState(thread.id);
+    // Clearing the override hands the thread back to the policy, so the next
+    // read re-evaluates it instead of waiting out the pass cadence.
+    if (clearSettlingState(thread.id)) forceNextPolicyPass();
   });
 
   bb.events.on("thread.deleted", ({ thread }) => {
     const removed = db.transaction(() => {
-      const membership = db
-        .prepare(`DELETE FROM folder_members WHERE thread_id = ?`)
+      const membership = sql(`DELETE FROM folder_members WHERE thread_id = ?`)
         .run(thread.id);
-      const accent = db
-        .prepare(`DELETE FROM thread_accents WHERE thread_id = ?`)
+      const accent = sql(`DELETE FROM thread_accents WHERE thread_id = ?`)
         .run(thread.id);
       const lifecycle = deleteLifecycle.run(thread.id);
       // The other way a live signal ends: the thread it protects is gone.
@@ -2159,8 +2280,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     // A deleted id must not leave an order row behind that would place a
     // future thread reusing the id, and stale rows accumulate otherwise.
-    const removedOrder = db
-      .prepare(`DELETE FROM inbox_order WHERE thread_id = ?`)
+    const removedOrder = sql(`DELETE FROM inbox_order WHERE thread_id = ?`)
       .run(thread.id);
     if (removedOrder.changes > 0) bb.realtime.publish(INBOX_ORDER_CHANNEL, {});
   });

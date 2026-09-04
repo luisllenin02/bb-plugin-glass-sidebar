@@ -1,5 +1,5 @@
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { glassSidebarRpcContract } from "../server";
 import {
@@ -31,6 +31,8 @@ export interface IconPickerProps {
   aiSuggester?: (input: AiIconSuggestionInput) => Promise<string | null>;
 }
 
+const ICON_SEARCH_DEBOUNCE_MS = 200;
+
 export function IconPicker({
   open,
   onOpenChange,
@@ -42,6 +44,7 @@ export function IconPicker({
 }: IconPickerProps) {
   const rpc = useRpc<typeof glassSidebarRpcContract>();
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState(query);
   const [category, setCategory] = useState<string | null>(null);
   const [icons, setIcons] = useState<CatalogIcon[]>([]);
   const [total, setTotal] = useState(0);
@@ -59,10 +62,20 @@ export function IconPicker({
 
   useEffect(() => {
     if (!open) return;
+    if (query === debouncedQuery) return;
+    const id = setTimeout(
+      () => setDebouncedQuery(query),
+      ICON_SEARCH_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(id);
+  }, [debouncedQuery, open, query]);
+
+  useEffect(() => {
+    if (!open) return;
     let cancelled = false;
     setLoading(true);
     void rpc
-      .call("listIconCatalog", { query, category })
+      .call("listIconCatalog", { query: debouncedQuery, category })
       .then((result) => {
         if (cancelled) return;
         setIcons(result.icons as CatalogIcon[]);
@@ -80,23 +93,31 @@ export function IconPicker({
     return () => {
       cancelled = true;
     };
-  }, [category, open, query, rpc]);
+  }, [category, debouncedQuery, open, rpc]);
 
   const categories = useMemo(
     () => [...new Set(icons.map((entry) => entry.category))].sort(),
     [icons],
   );
 
-  const save = async (icon: string, color: ProjectIconColorName | null) => {
-    setBusy(true);
-    try {
-      await rpc.call("setProjectDecorIcon", { projectId, icon, color });
-      setSelectedIcon(icon);
-      setSelectedColor(color);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const save = useCallback(
+    async (icon: string, color: ProjectIconColorName | null) => {
+      setBusy(true);
+      try {
+        await rpc.call("setProjectDecorIcon", { projectId, icon, color });
+        setSelectedIcon(icon);
+        setSelectedColor(color);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId, rpc],
+  );
+
+  const handleSelectIcon = useCallback(
+    (icon: string) => void save(icon, selectedColor),
+    [save, selectedColor],
+  );
 
   if (!open) return null;
 
@@ -229,28 +250,49 @@ export function IconPicker({
         ))}
       </div>
 
-      <div className="grid min-h-24 grid-cols-8 gap-1 overflow-y-auto max-md:grid-cols-6">
-        {icons.map((entry) => (
-          <button
-            key={entry.name}
-            type="button"
-            title={iconLabel(entry.name)}
-            aria-label={iconLabel(entry.name)}
-            aria-pressed={entry.name === selectedIcon}
-            disabled={busy}
-            onClick={() => void save(entry.name, selectedColor)}
-            className="flex aspect-square items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground aria-pressed:bg-state-active aria-pressed:text-foreground"
-          >
-            <HugeiconsIcon icon={entry.glyph as IconSvgElement} className="size-5" />
-          </button>
-        ))}
-      </div>
+      <IconGrid
+        icons={icons}
+        selectedIcon={selectedIcon}
+        busy={busy}
+        onSelect={handleSelectIcon}
+      />
       <p className="text-xs text-muted-foreground">
         {loading ? "Loading icons…" : `${icons.length} of ${total} icons`}
       </p>
     </div>
   );
 }
+
+const IconGrid = memo(function IconGrid({
+  icons,
+  selectedIcon,
+  busy,
+  onSelect,
+}: {
+  icons: readonly CatalogIcon[];
+  selectedIcon: string;
+  busy: boolean;
+  onSelect(icon: string): void;
+}) {
+  return (
+    <div className="grid min-h-24 grid-cols-8 gap-1 overflow-y-auto max-md:grid-cols-6">
+      {icons.map((entry) => (
+        <button
+          key={entry.name}
+          type="button"
+          title={iconLabel(entry.name)}
+          aria-label={iconLabel(entry.name)}
+          aria-pressed={entry.name === selectedIcon}
+          disabled={busy}
+          onClick={() => onSelect(entry.name)}
+          className="flex aspect-square items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground aria-pressed:bg-state-active aria-pressed:text-foreground"
+        >
+          <HugeiconsIcon icon={entry.glyph as IconSvgElement} className="size-5" />
+        </button>
+      ))}
+    </div>
+  );
+});
 
 function CategoryButton({
   active,

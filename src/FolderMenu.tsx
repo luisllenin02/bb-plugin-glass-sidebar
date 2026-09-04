@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { AccentPicker } from "./AccentPicker";
 import { Icon } from "./components/Icon";
@@ -20,6 +20,9 @@ export function FolderMenu({
   children: ReactNode;
 }) {
   const triggerRef = useRef<HTMLDivElement>(null);
+  // Built on open, like the row menu: a shelf of folders should not carry a
+  // menu tree per header on every render.
+  const [open, setOpen] = useState(false);
   const openAtButton = (button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect();
     triggerRef.current?.dispatchEvent(
@@ -33,7 +36,7 @@ export function FolderMenu({
   };
 
   return (
-    <ContextMenu.Root>
+    <ContextMenu.Root onOpenChange={setOpen}>
       <ContextMenu.Trigger asChild>
         <div ref={triggerRef} className="group/folder relative">
           {children}
@@ -52,6 +55,7 @@ export function FolderMenu({
           </button>
         </div>
       </ContextMenu.Trigger>
+      {open ? (
       <ContextMenu.Portal>
         <ContextMenu.Content
           aria-label={`Actions for folder ${folder.name}`}
@@ -83,6 +87,7 @@ export function FolderMenu({
           </Item>
         </ContextMenu.Content>
       </ContextMenu.Portal>
+      ) : null}
     </ContextMenu.Root>
   );
 }

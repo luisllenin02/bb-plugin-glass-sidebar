@@ -28,7 +28,11 @@ test("manifest and exclusive slot match the scaffold contract", () => {
   assert.equal(manifest.engines.bbPluginSdk, ">=0.4.34");
   assert.equal(manifest.bb.server, "./server.ts");
   assert.equal(manifest.bb.app, "./app.tsx");
-  assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ["zod"]);
+  assert.deepEqual(Object.keys(manifest.dependencies ?? {}).sort(), [
+    "@hugeicons/core-free-icons",
+    "@hugeicons/react",
+    "zod",
+  ]);
   assert.equal(
     (appSource.match(/app\.slots\.experimental_threadList\(/g) ?? []).length,
     1,

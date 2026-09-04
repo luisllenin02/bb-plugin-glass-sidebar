@@ -269,3 +269,17 @@ describe("semantic row tones", () => {
     expect(marker.className).not.toMatch(/(?:amber|orange|yellow)-\d/);
   });
 });
+
+describe("off-screen cards", () => {
+  it("lets the browser skip rendering cards until they scroll into view", () => {
+    renderInbox([thread({ id: "thr_1" }), thread({ id: "thr_2", title: "Two" })]);
+
+    for (const id of ["thr_1", "thr_2"]) {
+      const item = rowFor(id).closest("li") as HTMLElement;
+      expect(item.style.contentVisibility).toBe("auto");
+      // `auto` keeps the rendered height; the pixel value only sizes cards
+      // that have never been on screen.
+      expect(item.style.containIntrinsicSize).toBe("auto 75px");
+    }
+  });
+});

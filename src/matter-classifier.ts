@@ -1,4 +1,4 @@
-// Ported from ariofrio/bb-plugins with the firm's P8b matter-family additions.
+// Ported from ariofrio/bb-plugins, extended with legal matter-family rules.
 import { createReadStream } from "node:fs";
 import { opendir } from "node:fs/promises";
 import { join } from "node:path";

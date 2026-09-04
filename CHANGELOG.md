@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.1.0 — 2026-09-03
+
+- Performance review across the server, thread list, hooks, and settings.
+  The lifecycle read no longer runs the auto-settle policy pass on every
+  sidebar refresh; the pass runs on a 90-second cadence, on its five-minute
+  schedule, and when a thread goes quiet, with pull-request lookups cached
+  per environment. Prepared statements and the organization and decor views
+  are cached until the next change.
+- Rows are memoised with stable per-row bindings, so a realtime update that
+  changes nothing re-renders nothing. Context and folder menus build their
+  content only when opened. Lifecycle and workflow refreshes coalesce during
+  streaming.
+- Off-screen cards skip layout and paint until scrolled into view, which
+  makes long inboxes scroll smoothly and cuts context-menu open time by more
+  than half.
+- Fixed a hook-order crash in the child-threads chip when a thread gained its
+  first child while the chip was mounted.
+- Icon search is debounced; the icon grid no longer re-renders on unrelated
+  state changes.
+- Third-party notices now credit Hugeicons and zod. Internal programme
+  documents no longer ship with the plugin.
+
 ## 1.0.4 — 2026-09-03
 
 - The child-thread menu now portals above thread content and is constrained to

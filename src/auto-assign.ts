@@ -1,5 +1,5 @@
-// Ported from ariofrio/bb-plugins with the firm's P8/P8b automatic project
-// assignment rules; all classification remains deterministic and local-only.
+// Ported from ariofrio/bb-plugins, extended with name-based rules for legal
+// matter projects; all classification remains deterministic and local-only.
 import { readdir } from "node:fs/promises";
 import {
   ACCENT_NAMES,
@@ -77,8 +77,9 @@ const NAME_RULES: ReadonlyArray<{
   choice: AutoIconChoice;
   reason: AutoIconReason;
 }> = [
-  // Matter folders are named `Last, First 1101.XXXX`; the number is the
-  // reliable part. BalanceScaleIcon is tagged law/legal/court/justice.
+  // Legal matter projects commonly carry a docket-style number such as
+  // `1101.3953`; the number is the reliable part. BalanceScaleIcon is tagged
+  // law/legal/court/justice.
   {
     pattern: MATTER_PROJECT_NAME_PATTERN,
     choice: AUTO_ICON_CHOICES.matter,

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.1 — 2026-09-10
+
+- The Active and Inactive shelves are windowed like the Settled shelf: 60
+  (Active) or 30 (Inactive) cards mount at first, with a "Load N more"
+  control for the rest. Every thread stays in the list model — search, bulk
+  actions, folders, and the auto-settle pass see all of them — only the DOM
+  is capped. A card is about 40 nodes, so a few hundred uncapped rows were
+  most of the page, and every style recalc, focus move, and menu open paid
+  for them. The thread you are on is always mounted wherever it sits.
+
 ## 1.1.0 — 2026-09-03
 
 - Performance review across the server, thread list, hooks, and settings.

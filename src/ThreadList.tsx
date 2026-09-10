@@ -102,6 +102,19 @@ const NO_WORKFLOW_RUNS: readonly WorkflowRun[] = Object.freeze([]);
 /** Q5 paging: the Settled shelf is unbounded, so it opens on a window. */
 const SETTLED_INITIAL_LIMIT = 10;
 const SETTLED_PAGE_SIZE = 25;
+/**
+ * The Active and Inactive shelves are windowed the same way. Every thread
+ * stays in the list model (search, bulk actions, folders, and the policy pass
+ * see all of them); only the cards mounted in the DOM are capped. A card is
+ * ~40 nodes, so an uncapped shelf of a few hundred threads is most of the
+ * page and every style recalc, focus move, and menu open paid for it.
+ * Higher on Active, which is the shelf people scan; the thread you are on is
+ * always shown whatever its position.
+ */
+const ACTIVE_INITIAL_LIMIT = 60;
+const ACTIVE_PAGE_SIZE = 60;
+const INACTIVE_INITIAL_LIMIT = 30;
+const INACTIVE_PAGE_SIZE = 60;
 
 interface ShelfExpansionState {
   pinned: boolean;
@@ -309,6 +322,8 @@ export function ThreadList({
   const [expandedShelves, setExpandedShelves] =
     useState<ShelfExpansionState>(readShelfExpansion);
   const [settledLimit, setSettledLimit] = useState(SETTLED_INITIAL_LIMIT);
+  const [activeLimit, setActiveLimit] = useState(ACTIVE_INITIAL_LIMIT);
+  const [inactiveLimit, setInactiveLimit] = useState(INACTIVE_INITIAL_LIMIT);
   useEffect(() => {
     try {
       window.localStorage.setItem(
@@ -523,8 +538,9 @@ export function ThreadList({
         shelfInactive,
         expandedShelves.inactive,
         activeThreadId,
+        inactiveLimit,
       ),
-    [activeThreadId, expandedShelves.inactive, shelfInactive],
+    [activeThreadId, expandedShelves.inactive, inactiveLimit, shelfInactive],
   );
   const visibleSnoozed = useMemo(
     () => visibleShelfThreads(snoozed, expandedShelves.snoozed, activeThreadId),
@@ -593,8 +609,14 @@ export function ThreadList({
     [activeSortMode, projectNameById, shelfActive],
   );
   const visibleActive = useMemo(
-    () => visibleShelfThreads(sortedActive, expandedShelves.active, activeThreadId),
-    [activeThreadId, expandedShelves.active, sortedActive],
+    () =>
+      visibleShelfThreads(
+        sortedActive,
+        expandedShelves.active,
+        activeThreadId,
+        activeLimit,
+      ),
+    [activeLimit, activeThreadId, expandedShelves.active, sortedActive],
   );
   const activeProjectGroups = useMemo(
     () => groupActiveThreadsByProject(visibleActive, projectNameById),
@@ -1114,6 +1136,15 @@ export function ThreadList({
                     )}
                   </Shelf>
                 )}
+                {expandedShelves.active && sortedActive.length > activeLimit ? (
+                  <LoadMoreButton
+                    remaining={sortedActive.length - activeLimit}
+                    pageSize={ACTIVE_PAGE_SIZE}
+                    onClick={() =>
+                      setActiveLimit((limit) => limit + ACTIVE_PAGE_SIZE)
+                    }
+                  />
+                ) : null}
               </CollapsibleShelf>
             ) : null}
             {shelfInactive.length > 0 ? (
@@ -1133,6 +1164,15 @@ export function ThreadList({
                     renderActiveThread(thread, "inbox"),
                   )}
                 </Shelf>
+                {expandedShelves.inactive && shelfInactive.length > inactiveLimit ? (
+                  <LoadMoreButton
+                    remaining={shelfInactive.length - inactiveLimit}
+                    pageSize={INACTIVE_PAGE_SIZE}
+                    onClick={() =>
+                      setInactiveLimit((limit) => limit + INACTIVE_PAGE_SIZE)
+                    }
+                  />
+                ) : null}
               </CollapsibleShelf>
             ) : null}
             {shelfPinned.length === 0 &&
@@ -1411,14 +1451,33 @@ function ParkedShelf({
         })}
       </Shelf>
       {expanded && hasMore && onLoadMore ? (
-        <button
-          type="button"
+        <LoadMoreButton
+          remaining={threads.length - limit}
+          pageSize={SETTLED_PAGE_SIZE}
           onClick={onLoadMore}
-          className="ml-2.5 mt-1 rounded px-1.5 py-1 text-2xs font-medium text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
-        >
-          Load {Math.min(SETTLED_PAGE_SIZE, threads.length - limit)} more
-        </button>
+        />
       ) : null}
     </CollapsibleShelf>
+  );
+}
+
+/** The one "Load N more" control every windowed shelf shares. */
+function LoadMoreButton({
+  remaining,
+  pageSize,
+  onClick,
+}: {
+  remaining: number;
+  pageSize: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="ml-2.5 mt-1 rounded px-1.5 py-1 text-2xs font-medium text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+    >
+      Load {Math.min(pageSize, remaining)} more
+    </button>
   );
 }

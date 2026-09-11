@@ -45,7 +45,6 @@ export function SearchResults({
   accentFor,
   projectAccentFor,
   activeThreadId,
-  now,
   wokeThreadIds,
   onAcknowledgeWake,
   selectedThreadIds,
@@ -59,7 +58,6 @@ export function SearchResults({
   accentFor?: (thread: PluginSidebarThread) => ResolvedAccentSource;
   projectAccentFor?: (projectId: string) => ResolvedAccentSource;
   activeThreadId: string | null;
-  now: number;
   wokeThreadIds: ReadonlySet<string>;
   onAcknowledgeWake: (threadId: string) => void;
   selectedThreadIds: ReadonlySet<string>;
@@ -136,7 +134,6 @@ export function SearchResults({
           isActive={thread.id === activeThreadId}
           isHighlighted={highlightedIndex === index}
           isSelected={selectedThreadIds.has(thread.id)}
-          now={now}
           isWoke={wokeThreadIds.has(thread.id)}
           anchorRef={(node) => {
             resultRefs.current[index] = node;
@@ -161,7 +158,6 @@ function SearchResultRow({
   isActive,
   isHighlighted,
   isSelected,
-  now,
   isWoke,
   anchorRef,
   onHighlight,
@@ -179,7 +175,6 @@ function SearchResultRow({
   isActive: boolean;
   isHighlighted: boolean;
   isSelected: boolean;
-  now: number;
   isWoke: boolean;
   anchorRef: (node: HTMLAnchorElement | null) => void;
   onHighlight: () => void;
@@ -257,7 +252,7 @@ function SearchResultRow({
             isWoke && WOKE_TONE_CLASS,
           )}
         >
-          {isWoke ? "Woke" : <StatusOrTime thread={thread} now={now} />}
+          {isWoke ? "Woke" : <StatusOrTime thread={thread} />}
         </span>
       </a>
     </li>

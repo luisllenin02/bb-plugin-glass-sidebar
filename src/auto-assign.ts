@@ -238,6 +238,18 @@ export interface ReconcileProjectIconsOptions {
   listingFor: (project: AutoAssignmentProject) => Promise<readonly string[]>;
   matterClassifier?: (root: string) => Promise<MatterClassification>;
   publish: () => void;
+  /**
+   * Optional per-project-id memo for the resolved suggestion. Absent by
+   * default (the pure function re-reads on every call); callers that own the
+   * staleness trade-off supply one. Explicit redetect paths bypass it by not
+   * passing it.
+   */
+  suggestionCache?: SuggestionCache;
+}
+
+export interface SuggestionCache {
+  get(projectId: string): AutoIconSuggestion | undefined;
+  set(projectId: string, suggestion: AutoIconSuggestion): void;
 }
 
 export { autoProjectColorCss, autoProjectPaletteIndex };
@@ -255,18 +267,23 @@ export async function reconcileProjectIcons({
   listingFor,
   matterClassifier = classifyMatter,
   publish,
+  suggestionCache,
 }: ReconcileProjectIconsOptions): Promise<ReconcileProjectIconsResult> {
   let changed = false;
   const suggestions: Record<string, AutoIconSuggestion> = {};
   for (const project of projects) {
     if (store.get(project.id)?.source === "manual") continue;
-    const suggestion = MATTER_PROJECT_NAME_PATTERN.test(project.name)
-      ? await matterClassifier(project.path).then((classification) => ({
-          icon: classification.icon,
-          reason: classification.reason,
-          keywords: classification.topKeywords,
-        }))
-      : suggestIcon(project, await listingFor(project));
+    const cached = suggestionCache?.get(project.id);
+    const suggestion = cached
+      ? cached
+      : MATTER_PROJECT_NAME_PATTERN.test(project.name)
+        ? await matterClassifier(project.path).then((classification) => ({
+            icon: classification.icon,
+            reason: classification.reason,
+            keywords: classification.topKeywords,
+          }))
+        : suggestIcon(project, await listingFor(project));
+    if (!cached) suggestionCache?.set(project.id, suggestion);
     suggestions[project.id] = suggestion;
     changed =
       store.upsertAuto({

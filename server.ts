@@ -26,6 +26,7 @@ import {
   reconcileProjectIcons,
   type AutoAssignmentProject,
   type AutoIconSuggestion,
+  type SuggestionCache,
 } from "./src/auto-assign";
 import { searchIcons, type CatalogEntry } from "./src/icon-search";
 import { createProjectDecorStore } from "./src/project-decor-store";
@@ -873,7 +874,9 @@ export default async function plugin(bb: BbPluginApi) {
         awaitingLegacyImport = false;
         // Imported lifecycle rows and settings change what the policy decides.
         forceNextPolicyPass();
-        const reconciled = await reconcileProjects("import");
+        const reconciled = await reconcileProjects("import", undefined, {
+          bypassCache: true,
+        });
         firstProjectDecorRead = false;
         if (changed.has("project_decor") && !reconciled.changed) {
           publishProjectDecor("import");
@@ -1121,15 +1124,48 @@ export default async function plugin(bb: BbPluginApi) {
     }
   };
 
+  /**
+   * classifyMatter opens every matter folder (opendir ×5 + strategy + every
+   * `_context/*.md`) per invocation, so a same-process reconcile re-reading an
+   * unchanged project is the heaviest decor path by far. Hold the resolved
+   * suggestion per project id for a short TTL. Explicit redetect paths
+   * (redetectAllAutoIcons, resetProjectDecorToAuto, import) bypass the cache
+   * so a deliberate re-scan stays live; the TTL also self-heals any staleness.
+   */
+  const AUTO_ICON_SUGGESTION_CACHE_MS = 10 * 60_000;
+  const autoIconSuggestionStore = new Map<
+    string,
+    { expiresAt: number; suggestion: AutoIconSuggestion }
+  >();
+  const autoIconSuggestionCache: SuggestionCache = {
+    get(projectId) {
+      const entry = autoIconSuggestionStore.get(projectId);
+      if (!entry) return undefined;
+      if (entry.expiresAt <= Date.now()) {
+        autoIconSuggestionStore.delete(projectId);
+        return undefined;
+      }
+      return entry.suggestion;
+    },
+    set(projectId, suggestion) {
+      autoIconSuggestionStore.set(projectId, {
+        expiresAt: Date.now() + AUTO_ICON_SUGGESTION_CACHE_MS,
+        suggestion,
+      });
+    },
+  };
+
   const reconcileProjects = async (
     reason: string,
     selectedProjects?: readonly AutoAssignmentProject[],
+    options?: { bypassCache?: boolean },
   ) => {
     const result = await reconcileProjectIcons({
       projects: selectedProjects ?? (await listProjects()),
       store: projectDecorStore,
       listingFor: (project) => readTopLevelListing(project.path),
       publish: () => publishProjectDecor(reason),
+      suggestionCache: options?.bypassCache ? undefined : autoIconSuggestionCache,
     });
     for (const [projectId, suggestion] of Object.entries(result.suggestions)) {
       projectSuggestions.set(projectId, suggestion);
@@ -1446,9 +1482,12 @@ export default async function plugin(bb: BbPluginApi) {
    * held briefly so the burst costs one lookup per environment instead of one
    * per pass. `unknown` is never cached: it means the lookup failed, the
    * policy keeps the current state on it, and the next pass must be free to
-   * ask again.
+   * ask again. The hold spans the 90 s read-pass TTL and the 5-minute cron —
+   * a shorter cache expired before every pass and re-fanned one host call
+   * per environment each time; the cron cadence already defines the
+   * observable settle-reaction lag for a merged/closed PR.
    */
-  const PULL_REQUEST_CACHE_MS = 60_000;
+  const PULL_REQUEST_CACHE_MS = 300_000;
   const pullRequestCache = new Map<
     string,
     { expiresAt: number; pullRequest: AutoSettlePullRequest }
@@ -1769,8 +1808,8 @@ export default async function plugin(bb: BbPluginApi) {
     getProjectGlyphs: async ({ projectIds }) => {
       const glyphs = await loadIconGlyphs();
       const iconNames = new Set(
-        projectIds
-          .map((projectId) => projectDecorStore.get(projectId)?.icon)
+        [...projectDecorStore.getMany(projectIds).values()]
+          .map((entry) => entry.icon)
           .filter((icon): icon is string => Boolean(icon)),
       );
       return {
@@ -1816,6 +1855,7 @@ export default async function plugin(bb: BbPluginApi) {
       const reconciled = await reconcileProjects(
         "resetProjectDecorToAuto",
         projects,
+        { bypassCache: true },
       );
       if (cleared && !reconciled.changed) {
         publishProjectDecor("resetProjectDecorToAuto");
@@ -1823,7 +1863,9 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
     redetectAllAutoIcons: async () => {
-      const reconciled = await reconcileProjects("redetectAllAutoIcons");
+      const reconciled = await reconcileProjects("redetectAllAutoIcons", undefined, {
+        bypassCache: true,
+      });
       if (!reconciled.changed) publishProjectDecor("redetectAllAutoIcons");
       return { ok: true as const };
     },
@@ -2212,7 +2254,7 @@ export default async function plugin(bb: BbPluginApi) {
         async (threadId) => {
           await bb.sdk.threads.unpin({ threadId });
         },
-        4,
+        8,
       );
       const now = Date.now();
       writeManyLifecycle(
@@ -2246,7 +2288,12 @@ export default async function plugin(bb: BbPluginApi) {
     }),
   });
 
-  if (!awaitingLegacyImport) await reconcileProjects("server-start");
+  if (!awaitingLegacyImport) {
+    await reconcileProjects("server-start");
+    // The start reconcile already classified every project; without this the
+    // first getProjectDecor would run the entire reconcile a second time.
+    firstProjectDecorRead = false;
+  }
 
   // Real work clears both kinds of manual settle override. The next quiet
   // period can then be judged against the current policies.

@@ -110,7 +110,6 @@ export const ThreadCard = memo(function ThreadCard({
   organization,
   onFolderCreated,
   projectIconsAvailable = false,
-  now,
 }: {
   thread: PluginSidebarThread;
   /**
@@ -151,8 +150,6 @@ export const ThreadCard = memo(function ThreadCard({
   organization?: OrganizationAccess;
   onFolderCreated?: (folderId: string) => void;
   projectIconsAvailable?: boolean;
-  /** Quantized clock, so every card in one render agrees on "now". */
-  now: number;
 }) {
   const actions = useSidebarThreadActions();
   const [relatedExpanded, setRelatedExpanded] = useState(false);
@@ -334,7 +331,7 @@ export const ThreadCard = memo(function ThreadCard({
                     isSnoozeOpen && "opacity-0",
                   )}
                 >
-                  <StatusOrTime thread={thread} now={now} />
+                  <StatusOrTime thread={thread} />
                 </span>
                 {canParkNow && snoozePresets.length > 0 ? (
                   <span
@@ -453,7 +450,6 @@ export const ThreadCard = memo(function ThreadCard({
               parentThreadId={thread.id}
               activeThreadId={activeThreadId}
               workflowRuns={relatedWorkflowRuns}
-              now={now}
               ariaLabel={`Related child threads for ${threadDisplayTitle(thread)}`}
               className="relative z-10 mt-1 border-t border-sidebar-border/40 pt-1"
               projectIconsAvailable={projectIconsAvailable}

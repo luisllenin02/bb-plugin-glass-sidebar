@@ -172,7 +172,6 @@ describe("OpenPanesRow", () => {
       activeThreadId: "thr_a",
       onNavigate: () => {},
       actions,
-      now: 1_000,
     };
 
     const first = renderReact(<OpenPanesRow {...props} />);
@@ -223,7 +222,6 @@ describe("OpenPanesRow", () => {
             startedAt: 500,
           },
         ]}
-        now={1_000}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Columns" }));

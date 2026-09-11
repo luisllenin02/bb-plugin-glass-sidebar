@@ -14,6 +14,8 @@ import {
   reconcileProjectIcons,
   suggestIcon,
   type AutoAssignmentProject,
+  type AutoIconReason,
+  type SuggestionCache,
 } from "./auto-assign";
 import catalog from "../assets/icon-catalog.json";
 import { createProjectDecorStore } from "./project-decor-store";
@@ -206,6 +208,60 @@ describe("reconcileProjectIcons", () => {
       });
       expect(store.get("proj_manual")?.source).toBe("manual");
       expect(listingFor).toHaveBeenCalledTimes(4);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reuses the suggestion cache when supplied and reads through when not", async () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(PROJECT_DECOR_MIGRATION);
+      const store = createProjectDecorStore(db);
+      const listingFor = vi.fn(async () => ["package.json"]);
+      const matterClassifier = vi.fn(async () => ({
+        family: "construction" as const,
+        icon: "HammerIcon",
+        iconName: "hammer",
+        reason: "matter:construction" as const,
+        topKeywords: ["contractor", "permit", "change order"],
+      }));
+      const projects = [
+        {
+          id: "proj_matter",
+          name: "Builder, Alex 1101.4321",
+          path: "/matter",
+        },
+      ];
+      const cache = new Map<
+        string,
+        { icon: string; reason: AutoIconReason; keywords: string[] }
+      >();
+      const suggestionCache: SuggestionCache = {
+        get: (id) => cache.get(id),
+        set: (id, suggestion) => cache.set(id, suggestion),
+      };
+
+      await reconcileProjectIcons({
+        projects,
+        store,
+        listingFor,
+        matterClassifier,
+        suggestionCache,
+        publish: vi.fn(),
+      });
+      await reconcileProjectIcons({
+        projects,
+        store,
+        listingFor,
+        matterClassifier,
+        suggestionCache,
+        publish: vi.fn(),
+      });
+
+      expect(matterClassifier).toHaveBeenCalledTimes(1);
+      expect(listingFor).not.toHaveBeenCalled();
+      expect(store.get("proj_matter")?.icon).toBe("hammer");
     } finally {
       db.close();
     }

@@ -29,6 +29,34 @@ export function isWorking(thread: PluginSidebarThread): boolean {
   );
 }
 
+/**
+ * The two revision strings are built over the whole fleet on every list
+ * render. The host preserves thread identity for unchanged entries, so caching
+ * each thread's contribution — including `isWorking`, which is read only on a
+ * cache miss — makes an unrelated push reuse the same substrings instead of
+ * re-running the live-work check and re-allocating the pieces.
+ */
+const signalTokenCache = new WeakMap<object, string>();
+const activityTokenCache = new WeakMap<object, string>();
+
+function signalRevisionToken(thread: PluginSidebarThread): string {
+  let token = signalTokenCache.get(thread);
+  if (token === undefined) {
+    token = `${thread.id}\u001f${thread.hasPendingInteraction ? 1 : 0}${isWorking(thread) ? 1 : 0}\u001e`;
+    signalTokenCache.set(thread, token);
+  }
+  return token;
+}
+
+function activityRevisionToken(thread: PluginSidebarThread): string {
+  let token = activityTokenCache.get(thread);
+  if (token === undefined) {
+    token = `${thread.updatedAt}\u001e`;
+    activityTokenCache.set(thread, token);
+  }
+  return token;
+}
+
 export interface LifecycleApi {
   shelfFor(thread: PluginSidebarThread): ThreadShelf;
   canPark(thread: PluginSidebarThread): boolean;
@@ -307,12 +335,8 @@ export function useLifecycle(
   // re-run its policy pass over its own view of the threads. A streaming agent
   // bumps it many times a second, which used to cost one round trip per tick.
   // It now settles on the trailing edge of a burst instead.
-  let signalRevision = "";
-  let activityRevision = "";
-  for (const thread of threads) {
-    signalRevision += `${thread.id}\u001f${thread.hasPendingInteraction ? 1 : 0}${isWorking(thread) ? 1 : 0}\u001e`;
-    activityRevision += `${thread.updatedAt}\u001e`;
-  }
+  const signalRevision = threads.map(signalRevisionToken).join("");
+  const activityRevision = threads.map(activityRevisionToken).join("");
 
   const lastSignalRevision = useRef(signalRevision);
   const lastActivityRevision = useRef(activityRevision);

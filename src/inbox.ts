@@ -48,12 +48,29 @@ export function threadDisplayTitle(thread: PluginSidebarThread): string {
 export function searchThreadsByTitle(
   threads: readonly PluginSidebarThread[],
   query: string,
+  titleIndex?: ReadonlyMap<string, string>,
 ): PluginSidebarThread[] {
   const normalized = query.trim().toLowerCase();
   if (normalized.length === 0) return [...threads];
   return threads.filter((thread) =>
-    threadDisplayTitle(thread).toLowerCase().includes(normalized),
+    (titleIndex?.get(thread.id) ?? threadDisplayTitle(thread).toLowerCase())
+      .includes(normalized),
   );
+}
+
+/**
+ * Lowercased titles, one entry per thread. Built once per visible-list change
+ * and reused across keystrokes so a search scan does not re-lowercase the
+ * whole fleet on every key.
+ */
+export function buildTitleIndex(
+  threads: readonly PluginSidebarThread[],
+): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const thread of threads) {
+    index.set(thread.id, threadDisplayTitle(thread).toLowerCase());
+  }
+  return index;
 }
 
 /** Threads in the chosen scope; every thread when the scope is null. */

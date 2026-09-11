@@ -32,6 +32,25 @@ const EMPTY_SNAPSHOT: WorkflowActivitySnapshot = {
 const NO_RUNS: readonly WorkflowRun[] = Object.freeze([]);
 
 /**
+ * One token per thread object. The host preserves thread identity for
+ * unchanged entries, so a push that only bumps another thread reuses the same
+ * tokens here and the revision string's pieces are not re-allocated.
+ */
+const threadTokenCache = new WeakMap<object, string>();
+
+function threadRevisionToken(thread: {
+  id: string;
+  updatedAt: number;
+}): string {
+  let token = threadTokenCache.get(thread);
+  if (token === undefined) {
+    token = `${thread.id}:${thread.updatedAt}`;
+    threadTokenCache.set(thread, token);
+  }
+  return token;
+}
+
+/**
  * How long a burst of host list revisions may coalesce into one read. The
  * first revision of a quiet period still loads at once, so a workflow that
  * starts or finishes shows up immediately; the ticks behind it ride along.
@@ -102,7 +121,7 @@ export function useWorkflowActivity(): {
   const threadListRevision = useMemo(
     () =>
       `${threadState.status}\u001e${threadState.threads
-        .map((thread) => `${thread.id}:${thread.updatedAt}`)
+        .map(threadRevisionToken)
         .join("\u001f")}`,
     [threadState.status, threadState.threads],
   );

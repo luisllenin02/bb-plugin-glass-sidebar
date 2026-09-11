@@ -52,7 +52,7 @@ test("production bundles stay within their weight and polling budgets", async ()
 
 test("setInterval is confined to the two budgeted frontend owners", async () => {
   const allowed = new Set([
-    path.join(root, "src", "ThreadList.tsx"),
+    path.join(root, "src", "minute-clock.ts"),
     path.join(root, "src", "useWorkflowActivity.ts"),
   ]);
   const owners = [];

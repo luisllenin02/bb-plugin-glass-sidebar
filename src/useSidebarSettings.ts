@@ -29,6 +29,26 @@ function sameSettings(left: SettingsAccess, right: SettingsAccess): boolean {
   );
 }
 
+/**
+ * One token per thread object. The host preserves thread identity for
+ * unchanged entries, so an unrelated push re-renders with the same objects and
+ * this cache returns the same substrings — the revision string is still built,
+ * but its per-thread pieces are not re-allocated.
+ */
+const threadTokenCache = new WeakMap<object, string>();
+
+function threadRevisionToken(thread: {
+  id: string;
+  updatedAt: number;
+}): string {
+  let token = threadTokenCache.get(thread);
+  if (token === undefined) {
+    token = `${thread.id}:${thread.updatedAt}`;
+    threadTokenCache.set(thread, token);
+  }
+  return token;
+}
+
 export function useSidebarSettings(): SettingsAccess {
   const rpc = useRpc<typeof glassSidebarRpcContract>();
   const { status, threads } = useSidebarThreads();
@@ -56,8 +76,10 @@ export function useSidebarSettings(): SettingsAccess {
     }
   }, [rpc]);
 
-  let revision = status;
-  for (const thread of threads) revision += `\0${thread.id}:${thread.updatedAt}`;
+  const revision =
+    threads.length === 0
+      ? status
+      : `${status}\0${threads.map(threadRevisionToken).join("\0")}`;
   useEffect(() => {
     if (mountedRevision.current === null) {
       mountedRevision.current = revision;

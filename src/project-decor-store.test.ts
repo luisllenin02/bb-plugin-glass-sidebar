@@ -68,4 +68,20 @@ describe("project decor store", () => {
       db.close();
     }
   });
+
+  it("reads many rows in one chunked batch, omitting absent ids", () => {
+    const { db, store } = createStore();
+    try {
+      store.set({ projectId: "proj_1", icon: "rocket", color: "blue" });
+      store.set({ projectId: "proj_2", icon: "code", color: "pink" });
+
+      const many = store.getMany(["proj_1", "proj_missing", "proj_2"]);
+      expect([...many.keys()].sort()).toEqual(["proj_1", "proj_2"]);
+      expect(many.get("proj_1")).toMatchObject({ icon: "rocket" });
+      expect(many.get("proj_2")).toMatchObject({ icon: "code" });
+      expect(many.has("proj_missing")).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
 });

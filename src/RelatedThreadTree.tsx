@@ -29,7 +29,6 @@ export function RelatedThreadTree({
   parentThreadId,
   activeThreadId = null,
   workflowRuns = [],
-  now = Date.now(),
   onOpen,
   ariaLabel = "Related child threads",
   className,
@@ -39,7 +38,6 @@ export function RelatedThreadTree({
   parentThreadId: string;
   activeThreadId?: string | null;
   workflowRuns?: readonly WorkflowRun[];
-  now?: number;
   onOpen?: () => void;
   ariaLabel?: string;
   className?: string;
@@ -61,7 +59,6 @@ export function RelatedThreadTree({
         <WorkflowRunRow
           key={`workflow:${run.id}`}
           run={run}
-          now={now}
           onOpen={onOpen}
         />
       ))}
@@ -71,7 +68,6 @@ export function RelatedThreadTree({
           node={node}
           activeThreadId={activeThreadId}
           workflowRuns={workflowRuns}
-          now={now}
           onOpen={onOpen}
           projectIconsAvailable={projectIconsAvailable}
         />
@@ -84,7 +80,6 @@ export function RelatedThreadNode({
   node,
   activeThreadId = null,
   workflowRuns = [],
-  now = Date.now(),
   onOpen,
   buttonRole,
   projectIconsAvailable = false,
@@ -92,7 +87,6 @@ export function RelatedThreadNode({
   node: RelatedThreadTreeNode;
   activeThreadId?: string | null;
   workflowRuns?: readonly WorkflowRun[];
-  now?: number;
   onOpen?: () => void;
   buttonRole?: "menuitem";
   projectIconsAvailable?: boolean;
@@ -180,7 +174,6 @@ export function RelatedThreadNode({
             <WorkflowRunRow
               key={`workflow:${run.id}`}
               run={run}
-              now={now}
               onOpen={onOpen}
             />
           ))}
@@ -190,7 +183,6 @@ export function RelatedThreadNode({
               node={child}
               activeThreadId={activeThreadId}
               workflowRuns={workflowRuns}
-              now={now}
               onOpen={onOpen}
               buttonRole={buttonRole}
               projectIconsAvailable={projectIconsAvailable}

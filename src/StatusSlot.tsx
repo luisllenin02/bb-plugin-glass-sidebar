@@ -3,6 +3,7 @@ import type {
   PluginSidebarThreadIndicator,
 } from "@get-bb/plugin-sdk/app";
 import { cn } from "./lib/utils";
+import { useMinuteNow } from "./minute-clock";
 import { relativeTimeLabel } from "./relative-time";
 import { StatusGlyph } from "./StatusGlyph";
 import { statusToneClass } from "./status-tone";
@@ -35,12 +36,12 @@ export const TRAILING_GLYPH_BOX_CLASS =
  */
 export function StatusOrTime({
   thread,
-  now,
 }: {
   thread: PluginSidebarThread;
-  /** Quantized clock, shared by every row in one render. */
-  now: number;
 }) {
+  // The age label reads the module clock itself, so a memoised row skips the
+  // minute tick and only this span re-renders when the label actually changes.
+  const now = useMinuteNow();
   if (
     thread.activity.workflows > 0 &&
     thread.indicator !== "unread-error" &&

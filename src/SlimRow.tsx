@@ -1,4 +1,4 @@
-import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
   experimental_useSidebarThreadSplit as useSidebarThreadSplit,
@@ -21,11 +21,19 @@ import { threadDisplayTitle } from "./inbox";
 import { snoozeWakeLabel } from "./lifecycle";
 import { InlineThreadTitle } from "./InlineThreadTitle";
 import { ProjectGlyph } from "./ProjectGlyph";
+import { useMinuteNow } from "./minute-clock";
 import type {
   AccentSource,
   ConfiguredSnoozePreset,
   ProjectDecorEntry,
 } from "./row-props";
+
+/** The wake-time label, reading the module clock so a memoised row skips the
+ * minute tick while this span keeps its own cadence. */
+function SnoozeWakeLabel({ wakeAt }: { wakeAt: number }) {
+  const now = useMinuteNow();
+  return <>{snoozeWakeLabel(wakeAt, now)}</>;
+}
 
 /**
  * A parked thread: one line instead of a card. Density comes from the user
@@ -34,7 +42,7 @@ import type {
  * Same structure as the card — a full-bleed anchor under the restore button,
  * because a `<button>` inside an `<a>` is invalid interactive nesting.
  */
-export function SlimRow({
+export const SlimRow = memo(function SlimRow({
   thread,
   projectName,
   projectIconUrl,
@@ -44,7 +52,6 @@ export function SlimRow({
   isSelected,
   shelf,
   wakeAt,
-  now,
   snoozePresets,
   onNavigate,
   onRestore,
@@ -63,7 +70,6 @@ export function SlimRow({
   isSelected: boolean;
   shelf: "snoozed" | "settled";
   wakeAt: number | null;
-  now: number;
   snoozePresets: readonly ConfiguredSnoozePreset[];
   onNavigate: () => void;
   onRestore: () => void;
@@ -210,19 +216,25 @@ export function SlimRow({
             <span className="flex items-center transition-opacity duration-150 ease-out group-hover/slim:opacity-0 motion-reduce:transition-none">
               {shelf === "snoozed" && wakeAt !== null ? (
                 statusPrecedesWake ? (
-                  <Tooltip label={`Wakes ${snoozeWakeLabel(wakeAt, now)}`}>
+                  <Tooltip
+                    label={
+                      <>
+                        Wakes <SnoozeWakeLabel wakeAt={wakeAt} />
+                      </>
+                    }
+                  >
                     <span
                       tabIndex={0}
                       className="pointer-events-auto flex items-center rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
-                      <StatusOrTime thread={thread} now={now} />
+                      <StatusOrTime thread={thread} />
                     </span>
                   </Tooltip>
                 ) : (
-                  snoozeWakeLabel(wakeAt, now)
+                  <SnoozeWakeLabel wakeAt={wakeAt} />
                 )
               ) : (
-                <StatusOrTime thread={thread} now={now} />
+                <StatusOrTime thread={thread} />
               )}
             </span>
             <Tooltip
@@ -257,4 +269,4 @@ export function SlimRow({
       </li>
     </RowContextMenu>
   );
-}
+});

@@ -16,6 +16,8 @@ export interface StoredProjectDecor {
 export interface ProjectDecorStore {
   list(): StoredProjectDecor[];
   get(projectId: string): StoredProjectDecor | null;
+  /** Batch read, chunked under SQLite's variable limit, keyed by project id. */
+  getMany(projectIds: readonly string[]): Map<string, StoredProjectDecor>;
   set(entry: Pick<StoredProjectDecor, "projectId" | "icon" | "color">): void;
   upsertAuto(
     entry: Pick<StoredProjectDecor, "projectId" | "icon" | "color">,
@@ -76,11 +78,39 @@ export function createProjectDecorStore(db: Database): ProjectDecorStore {
     updatedAt: row.updated_at,
   });
 
+  // `IN (…)` placeholders are sized to the chunk, so cache one prepared
+  // statement per distinct chunk length rather than re-preparing per call.
+  const GET_MANY_CHUNK = 500;
+  const getManyRowsByCount = new Map<number, BetterSqlite3.Statement<unknown[]>>();
+  const getManyRows = (count: number): BetterSqlite3.Statement<unknown[]> => {
+    let statement = getManyRowsByCount.get(count);
+    if (!statement) {
+      const placeholders = Array.from({ length: count }, () => "?").join(",");
+      statement = db.prepare(`
+        SELECT project_id, icon, color, source, updated_at
+        FROM project_decor
+        WHERE project_id IN (${placeholders})
+      `);
+      getManyRowsByCount.set(count, statement);
+    }
+    return statement;
+  };
+
   return {
     list: () => (listRows.all() as StoredRow[]).map(fromRow),
     get(projectId) {
       const row = getRow.get(projectId) as StoredRow | undefined;
       return row ? fromRow(row) : null;
+    },
+    getMany(projectIds) {
+      const result = new Map<string, StoredProjectDecor>();
+      const ids = [...projectIds];
+      for (let offset = 0; offset < ids.length; offset += GET_MANY_CHUNK) {
+        const chunk = ids.slice(offset, offset + GET_MANY_CHUNK);
+        const rows = getManyRows(chunk.length).all(...chunk) as StoredRow[];
+        for (const row of rows) result.set(row.project_id, fromRow(row));
+      }
+      return result;
     },
     set({ projectId, icon, color }) {
       upsertManualRow.run(projectId, icon, color, Date.now());

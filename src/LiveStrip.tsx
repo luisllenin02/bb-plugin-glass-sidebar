@@ -14,6 +14,7 @@ import { ACCENT_PALETTE } from "./accent";
 import { Icon } from "./components/Icon";
 import { cn } from "./lib/utils";
 import { threadDisplayTitle } from "./inbox";
+import { useMinuteNow } from "./minute-clock";
 import { relativeTimeLabel } from "./relative-time";
 import type { ProjectDecorEntry, ProjectIconColorName } from "./row-props";
 import { StatusGlyph } from "./StatusGlyph";
@@ -256,8 +257,7 @@ export function OpenPanesRow({
   onNavigate,
   actions,
   workflowRows = [],
-  now = Date.now(),
-}: LiveStripCommonProps & { now?: number }) {
+}: LiveStripCommonProps) {
   const entries = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const [expanded, toggle] = useLiveStripExpanded("openPanes");
   const [columnsExpanded, setColumnsExpanded] = useState(readColumnsExpanded);
@@ -309,7 +309,6 @@ export function OpenPanesRow({
           columns={columns}
           threads={threads}
           projectDecor={projectDecor}
-          now={now}
           activeThreadId={activeThreadId}
           onNavigate={onNavigate}
           actions={actions}
@@ -364,7 +363,6 @@ function ColumnsStrip({
   columns,
   threads,
   projectDecor,
-  now,
   activeThreadId,
   onNavigate,
   actions,
@@ -372,11 +370,11 @@ function ColumnsStrip({
   columns: readonly ColumnViewModel[];
   threads: readonly PluginSidebarThread[];
   projectDecor: Readonly<Record<string, ProjectDecorEntry>>;
-  now: number;
   activeThreadId: string | null;
   onNavigate: () => void;
   actions: PluginSidebarThreadActions;
 }) {
+  const now = useMinuteNow();
   const threadById = new Map(threads.map((thread) => [thread.id, thread]));
   return (
     <div
@@ -460,9 +458,9 @@ export function NowRow({
   projectDecor = {},
   onNavigate,
   actions,
-  now,
-}: LiveStripCommonProps & { now: number }) {
+}: LiveStripCommonProps) {
   const [expanded, toggle] = useLiveStripExpanded("now");
+  const now = useMinuteNow();
   const { rows, overflow } = nowRows(threads);
   if (rows.length === 0) return null;
 
@@ -543,7 +541,7 @@ export function NowRow({
  * whole thread list, and the list above it re-renders on every push and tick.
  */
 export const LiveStrip = memo(function LiveStrip(
-  props: LiveStripCommonProps & { now: number },
+  props: LiveStripCommonProps,
 ) {
   return (
     <>

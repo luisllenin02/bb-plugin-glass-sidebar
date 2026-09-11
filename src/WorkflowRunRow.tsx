@@ -1,5 +1,6 @@
 import { experimental_useSidebarThreadActions as useSidebarThreadActions } from "@get-bb/plugin-sdk/app";
 import { cn } from "./lib/utils";
+import { useMinuteNow } from "./minute-clock";
 import { relativeTimeLabel } from "./relative-time";
 import { StatusGlyph } from "./StatusGlyph";
 import type { WorkflowRun } from "./workflow-activity";
@@ -11,12 +12,15 @@ export function WorkflowRunRow({
   className,
 }: {
   run: WorkflowRun;
-  now: number;
+  /** Optional override; absent, the row reads the module minute clock so its
+   * age stays fresh even while a memoised parent skips the tick. */
+  now?: number;
   onOpen?: () => void;
   className?: string;
 }) {
   const actions = useSidebarThreadActions();
-  const age = relativeTimeLabel(run.startedAt, now);
+  const minuteNow = useMinuteNow();
+  const age = relativeTimeLabel(run.startedAt, now ?? minuteNow);
   const title = `workflow · ${run.name}`;
 
   return (

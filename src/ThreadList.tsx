@@ -38,12 +38,14 @@ import {
   hideChildrenOfVisibleParents,
   nextThreadAfterParking,
   partitionPinned,
+  buildTitleIndex,
   searchThreadsByTitle,
   sortByCreatedAtDescending,
   sortSettledThreads,
   visibleInboxThreads,
 } from "./inbox";
 import { isInactiveThread, parseInactiveAfterHours } from "./inactive";
+import { useInactiveBoundaryNow } from "./minute-clock";
 import { parseConfiguredSnoozePresets } from "./lifecycle";
 import { useLifecycle } from "./useLifecycle";
 import type {
@@ -139,6 +141,15 @@ interface RowBindings {
   onSnooze: (snoozedUntil: number) => void;
   onAcknowledgeWake: () => void;
   onSelectionClick: (event: ReactMouseEvent<HTMLAnchorElement>) => boolean;
+}
+
+/** The four parked-row handlers, kept identity-stable so a memoised SlimRow
+ * skips renders that only rebuild fresh closures. */
+interface ParkedRowBindings {
+  onSnooze: (snoozedUntil: number) => void;
+  onRestore: () => void;
+  onSelectionClick: (event: ReactMouseEvent<HTMLAnchorElement>) => boolean;
+  onNavigate: () => void;
 }
 
 interface RowActions {
@@ -279,7 +290,22 @@ export function ThreadList({
     acknowledgeWake: () => {},
     selectionClick: () => false,
   });
+  const parkedRowActions = useRef<{
+    snooze: (threadId: string, snoozedUntil: number) => void;
+    unsnooze: (threadId: string) => void;
+    unsettle: (threadId: string) => void;
+    selectionClick: (
+      threadId: string,
+      event: ReactMouseEvent<HTMLAnchorElement>,
+    ) => boolean;
+  }>({
+    snooze: () => {},
+    unsnooze: () => {},
+    unsettle: () => {},
+    selectionClick: () => false,
+  });
   const rowBindings = useRef(new Map<string, RowBindings>());
+  const parkedRowBindings = useRef(new Map<string, ParkedRowBindings>());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [scope, setScope] = useState(ALL_PROJECTS);
   const [activeSortMode, setActiveSortMode] = useState(readActiveSort);
@@ -307,17 +333,12 @@ export function ThreadList({
     sidebarSettingsLoaded(settings) && settings.inactiveThreadsEnabled,
     String(settings.inactiveAfterHours),
   );
-  const [nowMinute, setNowMinute] = useState(() =>
-    Math.floor(Date.now() / 60_000),
-  );
-  useEffect(() => {
-    const timer = setInterval(
-      () => setNowMinute(Math.floor(Date.now() / 60_000)),
-      60_000,
-    );
-    return () => clearInterval(timer);
-  }, []);
-  const now = nowMinute * 60_000;
+  // The row age labels own their own minute clock (see StatusOrTime and the
+  // minute-clock store), so the list no longer re-renders every minute. The
+  // Active/Inactive partition still needs a clock, but its threshold is in
+  // hours, so a 5-minute quantum is plenty: the list re-renders on that
+  // cadence instead of every minute.
+  const now = useInactiveBoundaryNow();
 
   const [expandedShelves, setExpandedShelves] =
     useState<ShelfExpansionState>(readShelfExpansion);
@@ -460,9 +481,15 @@ export function ThreadList({
     };
   }, [activeThreads]);
   const isSearching = searchQuery.trim().length > 0;
+  // Lowercased titles, rebuilt only when the visible list changes, so a
+  // search scan is O(1) per thread per keystroke instead of re-lowercasing.
+  const searchTitleIndex = useMemo(
+    () => buildTitleIndex(visibleThreads),
+    [visibleThreads],
+  );
   const searchResults = useMemo(
-    () => searchThreadsByTitle(visibleThreads, searchQuery),
-    [searchQuery, visibleThreads],
+    () => searchThreadsByTitle(visibleThreads, searchQuery, searchTitleIndex),
+    [searchQuery, visibleThreads, searchTitleIndex],
   );
   const wokeSearchResultIds = useMemo(
     () =>
@@ -694,6 +721,17 @@ export function ThreadList({
       if (!onScreen.has(threadId)) live.delete(threadId);
     }
   }, [selectableThreadIds, selectableThreadIdsKey]);
+  useEffect(() => {
+    // Parked bindings are keyed by the parked shelves' membership, not the
+    // selectable list; prune them on the same cadence when they outgrow the
+    // parked rows.
+    const parked = parkedRowBindings.current;
+    const parkedIds = new Set([...snoozed, ...settled].map((t) => t.id));
+    if (parked.size <= Math.max(64, parkedIds.size * 2)) return;
+    for (const threadId of [...parked.keys()]) {
+      if (!parkedIds.has(threadId)) parked.delete(threadId);
+    }
+  }, [snoozed, settled]);
   const scopeLabel =
     scope === ALL_PROJECTS
       ? "All projects"
@@ -859,6 +897,16 @@ export function ThreadList({
     acknowledgeWake: (threadId) => void lifecycle.acknowledgeWake(threadId),
     selectionClick: handleSelectionClick,
   };
+  // Parked rows park in place — no navigation follows them — so their actions
+  // read this separate box. It is re-published every render, and the per-row
+  // bindings below read it when they fire, so they act on the current lifecycle.
+  parkedRowActions.current = {
+    snooze: (threadId, snoozedUntil) =>
+      void lifecycle.snooze(threadId, snoozedUntil),
+    unsnooze: (threadId) => void lifecycle.unsnooze(threadId),
+    unsettle: (threadId) => void lifecycle.unsettle(threadId),
+    selectionClick: handleSelectionClick,
+  };
 
   /**
    * The row-scoped props that would otherwise be a new closure or a new object
@@ -911,6 +959,34 @@ export function ThreadList({
     return created;
   };
 
+  /**
+   * The parked-row equivalent of `rowBindingsFor`: one stable set of handlers
+   * per thread, so `memo(SlimRow)` skips renders that only rebuilt closures.
+   * `onRestore` branches on the shelf (wake vs un-settle) when the binding is
+   * created, which never changes for a given row.
+   */
+  const parkedBindingsFor = (
+    thread: PluginSidebarThread,
+    shelf: "snoozed" | "settled",
+  ): ParkedRowBindings => {
+    const existing = parkedRowBindings.current.get(thread.id);
+    if (existing) return existing;
+    const threadId = thread.id;
+    const created: ParkedRowBindings = {
+      onSnooze: (snoozedUntil) =>
+        parkedRowActions.current.snooze(threadId, snoozedUntil),
+      onRestore: () =>
+        shelf === "snoozed"
+          ? parkedRowActions.current.unsnooze(threadId)
+          : parkedRowActions.current.unsettle(threadId),
+      onSelectionClick: (event) =>
+        parkedRowActions.current.selectionClick(threadId, event),
+      onNavigate: navigate,
+    };
+    parkedRowBindings.current.set(threadId, created);
+    return created;
+  };
+
   const renderFolderThread = (thread: PluginSidebarThread) =>
     renderActiveThread(thread, thread.isPinned ? "pinned" : "inbox");
 
@@ -948,7 +1024,6 @@ export function ThreadList({
           ? activeThreadId
           : null,
       onNavigate: navigate,
-      now,
       // @rows:accent (Q2)
       accent: rowAccent.css,
       organization: rowOrganization,
@@ -995,7 +1070,6 @@ export function ThreadList({
           onNavigate={navigate}
           actions={sidebarActions}
           workflowRows={workflowRuns}
-          now={now}
         />
         {/* @slot:bulk-bar (Q6) */}
         <div className="flex min-h-7 items-center gap-1 px-1.5 py-1">
@@ -1072,7 +1146,6 @@ export function ThreadList({
             accentFor={searchAccentFor}
             projectAccentFor={organization.projectAccentFor}
             activeThreadId={activeThreadId}
-            now={now}
             wokeThreadIds={wokeSearchResultIds}
             onAcknowledgeWake={acknowledgeWake}
             selectedThreadIds={selection.selectedIds}
@@ -1213,7 +1286,6 @@ export function ThreadList({
               decor={decor}
               organization={organization}
               activeThreadId={activeThreadId}
-              now={now}
               snoozePresets={snoozePresets}
               expanded={expandedShelves.snoozed}
               onToggle={() =>
@@ -1224,13 +1296,8 @@ export function ThreadList({
               }
               wakeAtFor={lifecycle.wakeAtFor}
               selectedThreadIds={selection.selectedIds}
-              onSelectionClick={handleSelectionClick}
               projectIconRevision={projectIconRevision}
-              onRestore={(threadId) => void lifecycle.unsnooze(threadId)}
-              onSnooze={(threadId, snoozedUntil) =>
-                void lifecycle.snooze(threadId, snoozedUntil)
-              }
-              onNavigate={onNavigate}
+              bindingsFor={parkedBindingsFor}
             />
             <ParkedShelf
               label="Settled"
@@ -1241,7 +1308,6 @@ export function ThreadList({
               decor={decor}
               organization={organization}
               activeThreadId={activeThreadId}
-              now={now}
               snoozePresets={snoozePresets}
               expanded={expandedShelves.settled}
               onToggle={() =>
@@ -1252,13 +1318,8 @@ export function ThreadList({
               }
               wakeAtFor={lifecycle.wakeAtFor}
               selectedThreadIds={selection.selectedIds}
-              onSelectionClick={handleSelectionClick}
               projectIconRevision={projectIconRevision}
-              onRestore={(threadId) => void lifecycle.unsettle(threadId)}
-              onSnooze={(threadId, snoozedUntil) =>
-                void lifecycle.snooze(threadId, snoozedUntil)
-              }
-              onNavigate={onNavigate}
+              bindingsFor={parkedBindingsFor}
               settledLimit={settledLimit}
               onLoadMore={() =>
                 setSettledLimit((limit) => limit + SETTLED_PAGE_SIZE)
@@ -1392,17 +1453,13 @@ function ParkedShelf({
   decor,
   organization,
   activeThreadId,
-  now,
   snoozePresets,
   expanded,
   onToggle,
   wakeAtFor,
   selectedThreadIds,
-  onSelectionClick,
   projectIconRevision,
-  onRestore,
-  onSnooze,
-  onNavigate,
+  bindingsFor,
   settledLimit,
   onLoadMore,
 }: {
@@ -1414,20 +1471,16 @@ function ParkedShelf({
   decor: DecorAccess;
   organization: OrganizationAccess;
   activeThreadId: string | null;
-  now: number;
   snoozePresets: readonly ConfiguredSnoozePreset[];
   expanded: boolean;
   onToggle: () => void;
   wakeAtFor: (thread: PluginSidebarThread) => number | null;
   selectedThreadIds: ReadonlySet<string>;
-  onSelectionClick: (
-    threadId: string,
-    event: ReactMouseEvent<HTMLAnchorElement>,
-  ) => boolean;
   projectIconRevision: number;
-  onRestore: (threadId: string) => void;
-  onSnooze: (threadId: string, snoozedUntil: number) => void;
-  onNavigate: () => void;
+  bindingsFor: (
+    thread: PluginSidebarThread,
+    shelf: "snoozed" | "settled",
+  ) => ParkedRowBindings;
   settledLimit?: number;
   onLoadMore?: () => void;
 }) {
@@ -1446,6 +1499,7 @@ function ParkedShelf({
         {visibleThreads.map((thread) => {
           const folderId = organization.folderOf(thread.id)?.id ?? null;
           const resolvedAccent = organization.accentSourceFor(thread, folderId);
+          const bindings = bindingsFor(thread, shelf);
           return (
             <SlimRow
               key={thread.id}
@@ -1463,12 +1517,11 @@ function ParkedShelf({
               accent={resolvedAccent.css}
               accentSource={resolvedAccent.source}
               wakeAt={wakeAtFor(thread)}
-              now={now}
               snoozePresets={snoozePresets}
-              onSnooze={(snoozedUntil) => onSnooze(thread.id, snoozedUntil)}
-              onNavigate={onNavigate}
-              onSelectionClick={(event) => onSelectionClick(thread.id, event)}
-              onRestore={() => onRestore(thread.id)}
+              onSnooze={bindings.onSnooze}
+              onNavigate={bindings.onNavigate}
+              onSelectionClick={bindings.onSelectionClick}
+              onRestore={bindings.onRestore}
             />
           );
         })}

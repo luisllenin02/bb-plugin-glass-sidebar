@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
 import {
+  buildTitleIndex,
   childrenOf,
   filterByProject,
   hideChildrenOfVisibleParents,
@@ -159,6 +160,23 @@ describe("searchThreadsByTitle", () => {
   it("returns everything for a blank query", () => {
     const threads = [thread({ id: "a" }), thread({ id: "b" })];
     expect(searchThreadsByTitle(threads, "   ")).toHaveLength(2);
+  });
+
+  it("reuses a precomputed lowercase title index across queries", () => {
+    const threads = [
+      thread({ id: "a", title: "Sidebar work" }),
+      thread({ id: "b", title: "Something else" }),
+    ];
+    const index = buildTitleIndex(threads);
+    expect(index).toEqual(
+      new Map([
+        ["a", "sidebar work"],
+        ["b", "something else"],
+      ]),
+    );
+    expect(searchThreadsByTitle(threads, "SIDEBAR", index).map((t) => t.id)).toEqual([
+      "a",
+    ]);
   });
 });
 

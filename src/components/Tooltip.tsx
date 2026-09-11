@@ -37,7 +37,7 @@ export function Tooltip({
   side = "top",
   className,
 }: {
-  label: string;
+  label: React.ReactNode;
   children: React.ReactElement;
   side?: React.ComponentPropsWithoutRef<
     typeof TooltipPrimitive.Content

@@ -5,8 +5,10 @@ import { useState, type ReactNode } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
+  experimental_useSidebarThreads as useSidebarThreads,
   type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
+import { toast } from "sonner";
 import { Icon } from "./components/Icon";
 import { AccentPicker, accentValueFromCss } from "./AccentPicker";
 import { cn } from "./lib/utils";
@@ -297,10 +299,18 @@ function SnoozeSubmenu({
 }
 
 function CopySubmenu({ thread }: { thread: PluginSidebarThread }) {
-  const copy = (text: string) => {
-    if (typeof navigator === "undefined" || !navigator.clipboard) return;
-    void navigator.clipboard.writeText(text);
-  };
+  // Mounted only while the menu is open, so the full-view hook costs no row
+  // anything. The path is the host's own "Copy thread link" form (inferred
+  // from bb core: personal project → /threads/<id>, else project-scoped).
+  const { projects } = useSidebarThreads();
+  const project = projects.find((p) => p.id === thread.projectId);
+  const threadPath = project?.isPersonal
+    ? `/threads/${thread.id}`
+    : `/projects/${thread.projectId}/threads/${thread.id}`;
+  const copy = (text: string) =>
+    typeof navigator === "undefined" || !navigator.clipboard
+      ? null
+      : navigator.clipboard.writeText(text);
 
   return (
     <ContextMenu.Sub>
@@ -318,6 +328,16 @@ function CopySubmenu({ thread }: { thread: PluginSidebarThread }) {
             Copy title
           </Item>
           <Item onSelect={() => copy(thread.id)}>Copy thread ID</Item>
+          <Item
+            onSelect={() =>
+              copy(new URL(threadPath, window.location.origin).href)?.then(
+                () => toast.success("Thread link copied"),
+                () => {},
+              )
+            }
+          >
+            Copy thread link
+          </Item>
         </ContextMenu.SubContent>
       </ContextMenu.Portal>
     </ContextMenu.Sub>

@@ -161,3 +161,30 @@ it("spends no row render on a push that changes nothing, one on a selection", as
   expect(counter.cardRenders).toBe(1);
   slot.lifecycle.unmount();
 });
+
+it("navigating A→B redraws only the two focused rows, not every card", async () => {
+  const Component = registration.component;
+  const slot = mount();
+  await waitFor(() => expect(counter.cardRenders).toBeGreaterThanOrEqual(ROW_COUNT));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(document.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(
+    ROW_COUNT,
+  );
+
+  // The route-active id is a list-level input; an unrelated childless card
+  // must not see it change. Only the old and new focused rows may redraw.
+  counter.cardRenders = 0;
+  await act(async () => {
+    slot.lifecycle.rerender(<Component {...props} activeThreadId="thr_1" />);
+    await Promise.resolve();
+  });
+  expect(
+    document
+      .querySelector('[data-sidebar-thread-id="thr_1"]')
+      ?.getAttribute("aria-current"),
+  ).toBe("page");
+  expect(counter.cardRenders).toBe(2);
+  slot.lifecycle.unmount();
+});

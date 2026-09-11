@@ -365,6 +365,12 @@ export function ThreadList({
   // here replaces one descendant walk over the whole array per row (O(n²) on
   // every host push) with one pass, and hands a childless row the same frozen
   // empty array every time, so its props stop churning.
+  // A parent whose descendants did not change keeps its previous array too:
+  // the host preserves thread identity for unchanged entries, so an unrelated
+  // push no longer hands every parent a fresh (equal) array.
+  const previousDescendants = useRef(
+    new Map<string, readonly PluginSidebarThread[]>(),
+  );
   const descendantsByThread = useMemo(() => {
     const childrenByParent = new Map<string, PluginSidebarThread[]>();
     for (const thread of hostThreads) {
@@ -387,8 +393,17 @@ export function ThreadList({
           queue.push(child.id);
         }
       }
-      descendants.set(parentThreadId, collected);
+      const prev = previousDescendants.current.get(parentThreadId);
+      descendants.set(
+        parentThreadId,
+        prev &&
+          prev.length === collected.length &&
+          prev.every((t, i) => t === collected[i])
+          ? prev
+          : collected,
+      );
     }
+    previousDescendants.current = descendants;
     return descendants;
   }, [hostThreads]);
   // The run list only changes when a run does. Without this the whole array —
@@ -918,12 +933,20 @@ export function ThreadList({
     // One accent resolution per row instead of two: `accentFor` returns the
     // `css` of exactly the answer `accentSourceFor` gives.
     const rowAccent = organization.accentSourceFor(thread, folder?.id ?? null);
+    const descendants = descendantsByThread.get(thread.id) ?? NO_RELATED_THREADS;
     const rowProps = {
       thread,
-      threads: descendantsByThread.get(thread.id) ?? NO_RELATED_THREADS,
+      threads: descendants,
       projectName: projectNameById.get(thread.projectId) ?? null,
       isActive: thread.id === activeThreadId,
-      activeThreadId,
+      // The card reads this only to highlight the active member of its
+      // expanded child tree, so only the rows whose tree contains it change
+      // on navigation instead of all 72 mounted cards.
+      activeThreadId:
+        activeThreadId !== null &&
+        descendants.some((d) => d.id === activeThreadId)
+          ? activeThreadId
+          : null,
       onNavigate: navigate,
       now,
       // @rows:accent (Q2)

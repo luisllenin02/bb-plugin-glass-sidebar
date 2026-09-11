@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Select,
   SelectContent,
@@ -23,10 +24,18 @@ export function SnoozeSelect({
   onOpenChange?: (open: boolean) => void;
   onSnooze: (snoozedUntil: number) => void;
 }) {
+  // Radix Select portals its children into a detached fragment while closed,
+  // so every row otherwise carries one mounted item per preset. Rendering the
+  // items only while open leaves a closed picker costing one trigger.
+  const [open, setOpen] = useState(false);
   return (
     <Select
+      open={open}
       disabled={disabled || snoozePresets.length === 0}
-      onOpenChange={onOpenChange}
+      onOpenChange={(next) => {
+        setOpen(next);
+        onOpenChange?.(next);
+      }}
       onValueChange={(presetId) => {
         const preset = snoozePresets.find((item) => item.id === presetId);
         if (preset) onSnooze(Date.now() + preset.durationMs);
@@ -41,11 +50,17 @@ export function SnoozeSelect({
         </SelectTrigger>
       </Tooltip>
       <SelectContent align="end">
-        {snoozePresets.map((preset) => (
-          <SelectItem key={preset.id} value={preset.id} className="text-xs">
-            {preset.label}
-          </SelectItem>
-        ))}
+        {open
+          ? snoozePresets.map((preset) => (
+              <SelectItem
+                key={preset.id}
+                value={preset.id}
+                className="text-xs"
+              >
+                {preset.label}
+              </SelectItem>
+            ))
+          : null}
       </SelectContent>
     </Select>
   );

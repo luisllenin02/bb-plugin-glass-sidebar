@@ -10,6 +10,9 @@ import {
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
 
+const toastMocks = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+vi.mock("sonner", () => ({ toast: toastMocks }));
+
 await loadPluginApp(() => import("../app"));
 const { RowContextMenu } = await import("./RowContextMenu");
 const { EMPTY_ORGANIZATION_ACCESS } = await import("./row-props");
@@ -72,6 +75,7 @@ function renderMenu(
   onRename?: () => void,
   organization?: OrganizationAccess,
   onFolderCreated?: (folderId: string) => void,
+  isPersonal = false,
 ) {
   return renderSlot(
     { component: MenuHarness },
@@ -80,9 +84,31 @@ function renderMenu(
       sidebarThreads: {
         status: "ready",
         threads: [thread],
-        projects: [{ id: "project", name: "Project", isPersonal: false }],
+        projects: [{ id: "project", name: "Project", isPersonal }],
       },
     },
+  );
+}
+
+function stubClipboard(
+  writeText: (text: string) => Promise<void> = vi.fn(async () => undefined),
+) {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  return writeText;
+}
+
+async function copyThreadLink() {
+  const menu = await openMenu();
+  fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy" }));
+  const submenu = await waitFor(() =>
+    document.querySelector<HTMLElement>('[aria-label="Copy thread data"]'),
+  );
+  expect(submenu).toBeTruthy();
+  fireEvent.click(
+    within(submenu!).getByRole("menuitem", { name: "Copy thread link" }),
   );
 }
 
@@ -179,6 +205,53 @@ describe("RowContextMenu Q1 base", () => {
       within(submenu!).getByRole("menuitem", { name: "Copy thread ID" }),
     );
     expect(writeText).toHaveBeenCalledWith("thr_menu");
+  });
+
+  it("copies the project-scoped thread link and confirms with a toast", async () => {
+    const writeText = stubClipboard();
+    toastMocks.success.mockClear();
+    renderMenu();
+    await copyThreadLink();
+    expect(writeText).toHaveBeenCalledWith(
+      `${window.location.origin}/projects/project/threads/thr_menu`,
+    );
+    await waitFor(() =>
+      expect(toastMocks.success).toHaveBeenCalledWith("Thread link copied"),
+    );
+  });
+
+  it("confirms the thread link only after the clipboard write settles", async () => {
+    let resolveWrite!: () => void;
+    stubClipboard(
+      vi.fn(() => new Promise<void>((resolve) => (resolveWrite = resolve))),
+    );
+    toastMocks.success.mockClear();
+    renderMenu();
+    await copyThreadLink();
+    await Promise.resolve();
+    expect(toastMocks.success).not.toHaveBeenCalled();
+    resolveWrite();
+    await waitFor(() =>
+      expect(toastMocks.success).toHaveBeenCalledWith("Thread link copied"),
+    );
+  });
+
+  it("does not report success when the clipboard write is denied", async () => {
+    stubClipboard(vi.fn(() => Promise.reject(new Error("NotAllowedError"))));
+    toastMocks.success.mockClear();
+    renderMenu();
+    await copyThreadLink();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(toastMocks.success).not.toHaveBeenCalled();
+  });
+
+  it("copies the bare thread link for the personal project", async () => {
+    const writeText = stubClipboard();
+    renderMenu(undefined, undefined, undefined, true);
+    await copyThreadLink();
+    expect(writeText).toHaveBeenCalledWith(
+      `${window.location.origin}/threads/thr_menu`,
+    );
   });
 });
 

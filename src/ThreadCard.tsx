@@ -324,7 +324,7 @@ export const ThreadCard = memo(function ThreadCard({
               >
                 <span
                   className={cn(
-                    "absolute inset-y-0 right-0 flex items-center justify-end transition-opacity duration-150 ease-out group-has-[:focus-visible]/status-slot:opacity-0 motion-reduce:transition-none",
+                    "absolute inset-y-0 right-0 flex items-center justify-end transition-opacity duration-150 ease-out group-focus-within/status-slot:opacity-0 motion-reduce:transition-none",
                     canParkNow &&
                       snoozePresets.length > 0 &&
                       "group-hover/card:opacity-0",
@@ -336,7 +336,7 @@ export const ThreadCard = memo(function ThreadCard({
                 {canParkNow && snoozePresets.length > 0 ? (
                   <span
                     className={cn(
-                      "pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 ease-out has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100 group-hover/card:pointer-events-auto group-hover/card:opacity-100 motion-reduce:transition-none",
+                      "pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 ease-out focus-within:pointer-events-auto focus-within:opacity-100 group-hover/card:pointer-events-auto group-hover/card:opacity-100 motion-reduce:transition-none",
                       isSnoozeOpen && "pointer-events-auto opacity-100",
                     )}
                   >

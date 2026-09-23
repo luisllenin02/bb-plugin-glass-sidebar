@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.4 — 2026-09-23
+
+- The Children popover sat above BB's menu layer (z-80/81), so a thread
+  context menu right-clicked from a child row opened underneath it. It now
+  sits just under BB's menus (z-48/49), still above the header and composer.
+
 ## 1.1.1 — 2026-09-10
 
 - The Active and Inactive shelves are windowed like the Settled shelf: 60

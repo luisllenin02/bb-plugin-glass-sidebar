@@ -149,8 +149,11 @@ export function SubagentsChip({
       {open && menuGeometry && typeof document !== "undefined"
         ? createPortal(
           <>
+          {/* Sit just under BB's menu layer (z-50): a thread context menu
+              right-clicked from a child row portals after this and must paint
+              on top of it. Still above the header and composer chrome. */}
           <span
-            className="fixed inset-0 z-[80]"
+            className="fixed inset-0 z-[48]"
             onClick={() => setOpen(false)}
             aria-hidden
           />
@@ -164,7 +167,7 @@ export function SubagentsChip({
               top: menuGeometry.top,
               width: menuGeometry.width,
             }}
-            className="fixed z-[81] flex flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-lg"
+            className="fixed z-[49] flex flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-lg"
           >
             <div className="flex shrink-0 items-center gap-2 px-3 pb-1 pt-2.5">
               <span className="text-xs font-semibold">Children</span>

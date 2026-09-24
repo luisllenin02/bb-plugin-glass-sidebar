@@ -4,6 +4,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -82,6 +83,11 @@ import {
   type ThreadSelectionState,
 } from "./selection";
 import { runBulkAction, type BulkActionResult } from "./bulk-actions";
+import {
+  RovingFocusContext,
+  createRovingStore,
+  handleRovingKeyDown,
+} from "./roving-focus";
 import { BulkSelectionBar } from "./BulkSelectionBar";
 import {
   ACTIVE_SORT_LABELS,
@@ -704,6 +710,22 @@ export function ThreadList({
       reconcileThreadSelection(current, selectableThreadIds),
     );
   }, [selectableThreadIds, selectableThreadIdsKey]);
+  // The list's one tab stop: the row last focused while it stays on screen,
+  // else the thread you are on, else the first row. Synced here, during the
+  // render and before any row renders, so a row redrawn for its own reasons
+  // reads the new stop in the same pass (see roving-focus).
+  const [roving] = useState(createRovingStore);
+  const onScreenIds = useMemo(
+    () => new Set(selectableThreadIds),
+    [selectableThreadIds],
+  );
+  roving.sync(
+    onScreenIds,
+    activeThreadId !== null && onScreenIds.has(activeThreadId)
+      ? activeThreadId
+      : (selectableThreadIds[0] ?? null),
+  );
+  useLayoutEffect(() => roving.flush());
   const selectedThreads = useMemo(
     () =>
       selectableThreads.filter((thread) =>
@@ -1055,8 +1077,14 @@ export function ThreadList({
     // One tooltip provider for the whole list. Radix keeps its open/skip
     // delay state here, so a card no longer carries a provider per tooltip.
     <TooltipProvider>
+    <RovingFocusContext.Provider value={roving}>
     <div data-glass-sidebar-root className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+      {/* overscroll-contain: the end of the list does not scroll or bounce
+          the drawer and page behind it. */}
+      <div
+        onKeyDown={handleRovingKeyDown}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-2"
+      >
         {/* @slot:live-strip (Q3) */}
         {visibleThreads.map((thread) => (
           <SplitProbe key={`split-probe:${thread.id}`} threadId={thread.id} />
@@ -1072,7 +1100,7 @@ export function ThreadList({
           workflowRows={workflowRuns}
         />
         {/* @slot:bulk-bar (Q6) */}
-        <div className="flex min-h-7 items-center gap-1 px-1.5 py-1">
+        <div className="flex min-h-7 items-center gap-1 px-1.5 py-1 [@media(hover:none)]:py-0">
           {selectedThreads.length > 0 ? (
             <BulkSelectionBar
               count={selectedThreads.length}
@@ -1111,7 +1139,7 @@ export function ThreadList({
                 aria-label={`Project scope: ${scopeLabel}`}
                 value={scope}
                 onChange={(event) => setScope(event.target.value)}
-                className="h-7 min-w-0 flex-1 rounded border-0 bg-transparent px-1 text-xs font-medium hover:bg-sidebar-accent"
+                className="h-7 min-w-0 flex-1 rounded border-0 bg-transparent px-1 text-xs font-medium hover:bg-sidebar-accent [@media(hover:none)]:h-11"
               >
                 <option value={ALL_PROJECTS}>All projects</option>
                 {projects.map((project) => (
@@ -1209,7 +1237,7 @@ export function ThreadList({
                         setActiveSortMode(event.target.value);
                       }
                     }}
-                    className="h-6 max-w-28 rounded border-0 bg-transparent px-1 text-2xs text-muted-foreground hover:bg-sidebar-accent"
+                    className="h-6 max-w-28 rounded border-0 bg-transparent px-1 text-2xs text-muted-foreground hover:bg-sidebar-accent [@media(hover:none)]:h-11"
                   >
                     {ACTIVE_SORT_MODES.map((mode) => (
                       <option key={mode} value={mode}>
@@ -1329,6 +1357,7 @@ export function ThreadList({
         )}
       </div>
     </div>
+    </RovingFocusContext.Provider>
     </TooltipProvider>
   );
 }
@@ -1379,12 +1408,14 @@ function CollapsibleShelf({
 }) {
   return (
     <section aria-label={label}>
-      <div className="mt-3 flex w-full items-center gap-1 px-2.5 pb-1">
+      {/* On touch the header trades its margin for a 44 px button: the
+          label and rule sit where they did, 13 px more apart. */}
+      <div className="mt-3 flex w-full items-center gap-1 px-2.5 pb-1 [@media(hover:none)]:mt-0 [@media(hover:none)]:pb-0">
         <button
           type="button"
           onClick={onToggle}
           aria-expanded={expanded}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          className="flex min-w-0 flex-1 items-center gap-2 text-left [@media(hover:none)]:min-h-11"
         >
           <span className="text-2xs font-medium text-muted-foreground/70">
             {expanded ? label : `${label} (${count})`}

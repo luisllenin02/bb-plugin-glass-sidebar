@@ -16,6 +16,7 @@ import {
   rowTitleClass,
 } from "./pane-state";
 import { RowContextMenu } from "./RowContextMenu";
+import { openRowMenu, useRowTabStop } from "./roving-focus";
 import { STATUS_SLOT_CLASS, StatusOrTime } from "./StatusSlot";
 import { threadDisplayTitle } from "./inbox";
 import { snoozeWakeLabel } from "./lifecycle";
@@ -84,6 +85,8 @@ export const SlimRow = memo(function SlimRow({
   const title = threadDisplayTitle(thread);
   const rowLabel = projectName ? `${projectName} · ${title}` : title;
   const [isRenaming, setIsRenaming] = useState(false);
+  const { isTabStop, onFocus: onRowFocus } = useRowTabStop(thread.id);
+  const innerTabIndex = isTabStop ? undefined : -1;
   // A parked thread can still be sitting in a split pane, and that outranks
   // the shelf it was filed under.
   const { layout } = useSidebarThreadSplit(thread.id);
@@ -111,12 +114,14 @@ export const SlimRow = memo(function SlimRow({
     >
       <li className="list-none">
         <div
+          data-glass-row=""
           data-thread-pane-state={paneState}
           data-thread-working={hasWorkflow ? "workflow" : undefined}
           data-project-accent-source={accentSource}
           style={rowAccentStyle(accent)}
+          onFocus={onRowFocus}
           className={cn(
-            "group/slim relative flex h-8 items-center gap-2 rounded-md px-2.5 text-xs transition-colors duration-150 ease-out motion-reduce:transition-none",
+            "group/slim relative flex h-8 items-center gap-2 rounded-md px-2.5 text-xs transition-colors duration-150 ease-out motion-reduce:transition-none [@media(hover:none)]:pr-11",
             rowRootClasses({ state: paneState, hasAccent, isSelected }),
           )}
         >
@@ -128,6 +133,7 @@ export const SlimRow = memo(function SlimRow({
             aria-label={`${isSelected ? "Selected, " : ""}${rowLabel}`}
             aria-current={isActive ? "page" : undefined}
             data-selected={isSelected ? "true" : undefined}
+            tabIndex={isTabStop ? 0 : -1}
             onClick={(event) => {
               event.preventDefault();
               if (isRenaming || event.detail > 1) return;
@@ -140,7 +146,7 @@ export const SlimRow = memo(function SlimRow({
               event.stopPropagation();
               setIsRenaming(true);
             }}
-            className="absolute inset-0 cursor-pointer rounded-md"
+            className="absolute inset-0 cursor-pointer rounded-md outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
           />
           <span
             className={cn(
@@ -224,7 +230,7 @@ export const SlimRow = memo(function SlimRow({
                     }
                   >
                     <span
-                      tabIndex={0}
+                      tabIndex={isTabStop ? 0 : -1}
                       className="pointer-events-auto flex items-center rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       <StatusOrTime thread={thread} />
@@ -249,6 +255,7 @@ export const SlimRow = memo(function SlimRow({
                     ? "Wake thread now"
                     : "Un-settle thread"
                 }
+                tabIndex={innerTabIndex}
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
@@ -265,6 +272,23 @@ export const SlimRow = memo(function SlimRow({
               </button>
             </Tooltip>
           </span>
+          {/* The card's touch "…", 44 px wide; a slim row is 32 px tall and
+              the target stops there rather than overlap its neighbours. */}
+          <button
+            type="button"
+            aria-label={`Actions for ${title}`}
+            aria-haspopup="menu"
+            tabIndex={innerTabIndex}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              openRowMenu(event.currentTarget);
+            }}
+            className="absolute inset-y-0 right-0 z-10 hidden w-11 items-center justify-center rounded-r-md text-muted-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring active:text-foreground [@media(hover:none)]:flex"
+          >
+            <Icon name="MoreHorizontal" className="size-4" aria-hidden />
+          </button>
         </div>
       </li>
     </RowContextMenu>

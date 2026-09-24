@@ -3,6 +3,12 @@ import * as ContextMenu from "@radix-ui/react-context-menu";
 import { AccentPicker } from "./AccentPicker";
 import { Icon } from "./components/Icon";
 import { cn } from "./lib/utils";
+import { usePortalScopeProps } from "./lib/portal-scope";
+import {
+  MENU_CONTENT_CLASS,
+  MENU_SEPARATOR_CLASS,
+  menuItemClass,
+} from "./menu-classes";
 import type { Folder } from "./organization";
 import type { OrganizationActionsAccess } from "./row-props";
 
@@ -23,6 +29,7 @@ export function FolderMenu({
   // Built on open, like the row menu: a shelf of folders should not carry a
   // menu tree per header on every render.
   const [open, setOpen] = useState(false);
+  const portalScope = usePortalScopeProps();
   const openAtButton = (button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect();
     triggerRef.current?.dispatchEvent(
@@ -49,7 +56,9 @@ export function FolderMenu({
               event.stopPropagation();
               openAtButton(event.currentTarget);
             }}
-            className="absolute right-2 top-1/2 z-20 grid size-6 -translate-y-1/2 place-items-center rounded text-muted-foreground opacity-0 hover:bg-sidebar-accent hover:text-foreground focus-visible:opacity-100 group-hover/folder:opacity-100"
+            // Hover-only with a mouse; on touch there is no hover, so it
+            // stays visible and takes a 44 px target at the header's edge.
+            className="absolute right-2 top-1/2 z-20 grid size-6 -translate-y-1/2 place-items-center rounded text-muted-foreground opacity-0 hover:bg-sidebar-accent hover:text-foreground focus-visible:opacity-100 group-hover/folder:opacity-100 [@media(hover:none)]:right-0 [@media(hover:none)]:size-11 [@media(hover:none)]:opacity-100"
           >
             <Icon name="Edit" className="size-3.5" />
           </button>
@@ -59,7 +68,8 @@ export function FolderMenu({
       <ContextMenu.Portal>
         <ContextMenu.Content
           aria-label={`Actions for folder ${folder.name}`}
-          className="z-50 min-w-48 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+          {...portalScope}
+          className={cn(MENU_CONTENT_CLASS, "min-w-48")}
         >
           <Item onSelect={() => globalThis.setTimeout(onRename, 0)}>
             Rename
@@ -99,9 +109,10 @@ function ColourSubmenu({
   folder: Folder;
   onChange: (value: { colorIndex: number; customColor: string | null }) => void;
 }) {
+  const portalScope = usePortalScopeProps();
   return (
     <ContextMenu.Sub>
-      <ContextMenu.SubTrigger className={itemClassName()}>
+      <ContextMenu.SubTrigger className={menuItemClass()}>
         Colour
         <Icon name="ChevronRight" className="ml-auto size-4 opacity-60" />
       </ContextMenu.SubTrigger>
@@ -109,21 +120,13 @@ function ColourSubmenu({
         <ContextMenu.SubContent
           aria-label={`Colour for ${folder.name}`}
           sideOffset={4}
-          className="z-50 w-64 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+          {...portalScope}
+          className={cn(MENU_CONTENT_CLASS, "w-64")}
         >
           <AccentPicker value={folder} onChange={onChange} />
         </ContextMenu.SubContent>
       </ContextMenu.Portal>
     </ContextMenu.Sub>
-  );
-}
-
-function itemClassName(destructive = false): string {
-  return cn(
-    "flex cursor-pointer items-center rounded-md px-2 py-1.5 text-sm outline-none",
-    "data-[state=open]:bg-accent data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground",
-    "data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50",
-    destructive && "text-destructive-text",
   );
 }
 
@@ -137,12 +140,12 @@ function Item({
   onSelect: () => void;
 }) {
   return (
-    <ContextMenu.Item onSelect={onSelect} className={itemClassName(destructive)}>
+    <ContextMenu.Item onSelect={onSelect} className={menuItemClass(destructive)}>
       {children}
     </ContextMenu.Item>
   );
 }
 
 function Separator() {
-  return <ContextMenu.Separator className="my-1 h-px bg-border" />;
+  return <ContextMenu.Separator className={MENU_SEPARATOR_CLASS} />;
 }

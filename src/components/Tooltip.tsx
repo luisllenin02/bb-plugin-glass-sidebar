@@ -36,9 +36,15 @@ export function Tooltip({
   children,
   side = "top",
   className,
+  open,
+  onOpenChange,
 }: {
   label: React.ReactNode;
   children: React.ReactElement;
+  /** Controlled open state, for a trigger that shows its tooltip on press
+   * (touch has no hover). Omit both for the ordinary hover/focus tooltip. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   side?: React.ComponentPropsWithoutRef<
     typeof TooltipPrimitive.Content
   >["side"];
@@ -46,7 +52,7 @@ export function Tooltip({
 }) {
   const hasProvider = React.useContext(TooltipScopeContext);
   const tooltip = (
-    <TooltipPrimitive.Root>
+    <TooltipPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Content

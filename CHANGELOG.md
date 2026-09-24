@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.1.5 — 2026-09-24
+
+- One tab stop for the thread list. Every row anchor and its inline
+  controls were separate stops, so from the top of the page it took 500
+  Tabs to reach the composer, 302 of them in this list. Now one row takes
+  part in the tab order, with its own controls: the row you last focused,
+  else the thread you are on, else the first row. Up/Down and Home/End move
+  between rows, Enter opens, and the context-menu key or Shift+F10 opens
+  the row menu. Focus returns to the row when the menu closes. The list is
+  down to 10 stops, and the composer is 208 Tabs from the top. The stop is
+  held outside React state, so moving it redraws two rows, not the list.
+- Keyboard focus is visible. The Snooze trigger removed its ring
+  (`focus:ring-0`); a keyboard focus now gets bb's 1 px ring, while a
+  pointer focus still shows none. A row's own focus outline was clipped to
+  four corner dots by the card's paint containment; it is now an inset
+  ring. "Thread details" is a real button: hover and focus show it as
+  before, and a press opens it, which is the only way to open it on touch.
+- Touch. Row actions were hover-only, so a phone could not reach them.
+  On `(hover: none)` each row shows one trailing "…" (44 × 76 px on a card,
+  44 × 32 px on a slim row) that opens the row menu. The column costs the
+  card 34 px of width; row height is unchanged at 78 px. The list sets
+  `overscroll-behavior: contain`, so scrolling past its end no longer drags
+  the drawer or page behind it.
+- 44 px touch targets at 390 px: the scope select (was 28 px tall), the
+  shelf headers (15 px; the header trades its margin for the button, so the
+  label and rule sit 13 px further apart), folder headers (36 px) and their
+  actions button (24 px, and now visible on touch), and "Thread details"
+  (12 × 12 px; its target is anchored at the card's bottom-right corner
+  because the card clips anything past its edge).
+- The row and folder menus use bb's own menu classes (6 px panel radius,
+  4 px items, 12 px text, 26 px items, bb's enter and exit animation)
+  instead of a near miss (8/6 px, 14 px, 31 px, no motion), and carry the
+  plugin's portal scope like its tooltips and selects already did.
+
 ## 1.1.4 — 2026-09-23
 
 - The Children popover sat above BB's menu layer (z-80/81), so a thread

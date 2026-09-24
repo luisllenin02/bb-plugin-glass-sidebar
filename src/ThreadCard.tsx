@@ -29,6 +29,7 @@ import {
 } from "./pane-state";
 import { RowContextMenu } from "./RowContextMenu";
 import { ProviderGlyph } from "./ProviderGlyph";
+import { openRowMenu, useRowTabStop } from "./roving-focus";
 
 /**
  * Off-screen cards skip layout, style and paint until they scroll into view.
@@ -171,6 +172,10 @@ export const ThreadCard = memo(function ThreadCard({
   const { splitProps, layout } = useSidebarThreadSplit(thread.id);
   const [isRenaming, setIsRenaming] = useState(false);
   const [isSnoozeOpen, setIsSnoozeOpen] = useState(false);
+  // One row in the list is the tab stop; the rest, and their controls, are
+  // reached with the arrow keys (see roving-focus).
+  const { isTabStop, onFocus: onRowFocus } = useRowTabStop(thread.id);
+  const innerTabIndex = isTabStop ? undefined : -1;
   const paneState = resolvePaneState(isActive, layout);
   const hasAccent = Boolean(accent);
   const hasWorkflow =
@@ -210,12 +215,15 @@ export const ThreadCard = memo(function ThreadCard({
         )}
       >
         <div
+          data-glass-row=""
           data-thread-pane-state={paneState}
           data-thread-working={hasWorkflow ? "workflow" : undefined}
           data-project-accent-source={accentSource}
           style={rowAccentStyle(accent)}
+          onFocus={onRowFocus}
           className={cn(
-            "group/card relative rounded-md px-2.5 py-2 transition-colors duration-150 ease-out motion-reduce:transition-none",
+            // On touch the row keeps a 44 px column for its "…" button.
+            "group/card relative rounded-md px-2.5 py-2 transition-colors duration-150 ease-out motion-reduce:transition-none [@media(hover:none)]:pr-11",
             // Focused, open-in-another-pane and idle are three different
             // surfaces, not three alphas of one tint.
             rowRootClasses({ state: paneState, hasAccent, isSelected }),
@@ -231,6 +239,7 @@ export const ThreadCard = memo(function ThreadCard({
             aria-current={isActive ? "page" : undefined}
             data-selected={isSelected ? "true" : undefined}
             draggable={false}
+            tabIndex={isTabStop ? 0 : -1}
             aria-keyshortcuts={
               reorder && reorder.hasKeyboardReorder !== false
                 ? "Alt+ArrowUp Alt+ArrowDown"
@@ -255,7 +264,10 @@ export const ThreadCard = memo(function ThreadCard({
               setIsRenaming(true);
             }}
             className={cn(
-              "absolute inset-0 rounded-md",
+              // Inset: the card's paint containment clips anything drawn
+              // outside it, which left the browser's focus outline as four
+              // corner dots.
+              "absolute inset-0 rounded-md outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
               reorder && !reorder.disabled
                 ? "cursor-grab active:cursor-grabbing"
                 : "cursor-pointer",
@@ -280,6 +292,7 @@ export const ThreadCard = memo(function ThreadCard({
                 <button
                   type="button"
                   aria-label={`Unpin ${threadDisplayTitle(thread)}`}
+                  tabIndex={innerTabIndex}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -301,6 +314,7 @@ export const ThreadCard = memo(function ThreadCard({
                 <button
                   type="button"
                   aria-label="Dismiss Woke marker"
+                  tabIndex={innerTabIndex}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -343,13 +357,17 @@ export const ThreadCard = memo(function ThreadCard({
                     <SnoozeSelect
                       label="Snooze thread"
                       snoozePresets={snoozePresets}
-                      triggerClassName="h-5 w-5 border-0 px-0.5 py-0 shadow-none hover:bg-transparent focus:ring-0 [&>svg:last-child]:size-3"
+                      // No ring on a pointer focus; a keyboard focus gets
+                      // bb's own 1 px ring.
+                      triggerClassName="h-5 w-5 border-0 px-0.5 py-0 shadow-none hover:bg-transparent focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring [&>svg:last-child]:size-3"
+                      tabIndex={innerTabIndex}
                       onOpenChange={setIsSnoozeOpen}
                       onSnooze={onSnooze}
                     />
                     <ParkButton
                       label="Settle thread"
                       onActivate={onSettle}
+                      tabIndex={innerTabIndex}
                     />
                   </span>
                 ) : null}
@@ -408,6 +426,7 @@ export const ThreadCard = memo(function ThreadCard({
               <button
                 type="button"
                 aria-expanded={relatedExpanded}
+                tabIndex={innerTabIndex}
                 aria-label={`${relatedExpanded ? "Collapse" : "Show"} ${relatedCount} related child threads`}
                 onClick={(event) => {
                   event.preventDefault();
@@ -428,22 +447,32 @@ export const ThreadCard = memo(function ThreadCard({
                 and a newly opened split pane independent of every idle row's
                 worktree; active panes still show their PR status. */}
             {isActive || layout !== null ? (
-              <PullRequestBadge threadId={thread.id} />
+              <PullRequestBadge threadId={thread.id} tabIndex={innerTabIndex} />
             ) : null}
-            <Tooltip
+            <ThreadDetailsButton
               label={threadMetadataLabel(thread, projectName)}
-              side="left"
-              className="whitespace-pre-line"
-            >
-              <span
-                tabIndex={0}
-                aria-label="Thread details"
-                className="pointer-events-auto rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <ProviderGlyph providerId={thread.providerId} />
-              </span>
-            </Tooltip>
+              providerId={thread.providerId}
+              tabIndex={innerTabIndex}
+            />
           </div>
+          {/* Touch has no hover, so the row's actions — the hover snooze and
+              settle, and everything else in the context menu — sit behind
+              one "…" that opens that same menu. */}
+          <button
+            type="button"
+            aria-label={`Actions for ${threadDisplayTitle(thread)}`}
+            aria-haspopup="menu"
+            tabIndex={innerTabIndex}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              openRowMenu(event.currentTarget);
+            }}
+            className="absolute right-0 top-0 z-10 hidden h-full max-h-19 w-11 items-center justify-center rounded-r-md text-muted-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring active:text-foreground [@media(hover:none)]:flex"
+          >
+            <Icon name="MoreHorizontal" className="size-4" aria-hidden />
+          </button>
           {relatedExpanded ? (
             <RelatedThreadTree
               threads={threads ?? []}
@@ -461,7 +490,13 @@ export const ThreadCard = memo(function ThreadCard({
   );
 });
 
-function PullRequestBadge({ threadId }: { threadId: string }) {
+function PullRequestBadge({
+  threadId,
+  tabIndex,
+}: {
+  threadId: string;
+  tabIndex?: number;
+}) {
   const { pullRequest } = useSidebarThreadPullRequest(threadId);
   if (!pullRequest) return null;
   return (
@@ -473,9 +508,11 @@ function PullRequestBadge({ threadId }: { threadId: string }) {
         href={pullRequest.url}
         target="_blank"
         rel="noreferrer"
+        tabIndex={tabIndex}
         onClick={(event) => event.stopPropagation()}
         className={cn(
-          "pointer-events-auto relative shrink-0 font-mono hover:underline",
+          // z-10: stays above the details button's touch target beside it.
+          "pointer-events-auto relative z-10 shrink-0 font-mono hover:underline",
           pullRequestToneClass(pullRequest),
         )}
       >
@@ -605,15 +642,18 @@ function pullRequestStatusLabel(pullRequest: PluginSidebarPullRequest): string {
 function ParkButton({
   label,
   onActivate,
+  tabIndex,
 }: {
   label: string;
   onActivate: () => void;
+  tabIndex?: number;
 }) {
   return (
     <Tooltip label={label}>
       <button
         type="button"
         aria-label={label}
+        tabIndex={tabIndex}
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -622,6 +662,50 @@ function ParkButton({
         className="rounded p-0.5 text-muted-foreground hover:text-foreground"
       >
         <Icon name="Check" className="size-3.5" />
+      </button>
+    </Tooltip>
+  );
+}
+
+/**
+ * The provider glyph that opens the row's metadata. A real button: a hover or
+ * keyboard focus shows it as before, and a press (the only way on touch)
+ * opens it too. Its 12 px glyph gets a 44 px touch target.
+ */
+function ThreadDetailsButton({
+  label,
+  providerId,
+  tabIndex,
+}: {
+  label: string;
+  providerId: string;
+  tabIndex?: number;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Tooltip
+      label={label}
+      side="left"
+      className="whitespace-pre-line"
+      open={open}
+      onOpenChange={setOpen}
+    >
+      <button
+        type="button"
+        aria-label="Thread details"
+        tabIndex={tabIndex}
+        onClick={(event) => {
+          // Also stops the tooltip trigger's own close-on-click.
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(true);
+        }}
+        // Touch: a 44 px target anchored at the card's bottom-right corner,
+        // not centred — the card clips anything past its edge and the "…"
+        // column owns the space to the right.
+        className="pointer-events-auto relative rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring [@media(hover:none)]:after:absolute [@media(hover:none)]:after:-bottom-2.5 [@media(hover:none)]:after:right-0 [@media(hover:none)]:after:size-11"
+      >
+        <ProviderGlyph providerId={providerId} />
       </button>
     </Tooltip>
   );

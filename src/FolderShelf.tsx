@@ -191,7 +191,7 @@ export function FolderHeader({
         }}
         className="absolute inset-0 z-0 w-full cursor-grab rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
       />
-      <div className="pointer-events-none relative z-10 flex min-h-9 items-center gap-2 px-2.5 pr-10 text-sm">
+      <div className="pointer-events-none relative z-10 flex min-h-9 items-center gap-2 px-2.5 pr-10 text-sm [@media(hover:none)]:min-h-11 [@media(hover:none)]:pr-11">
         <Icon
           name={folder.collapsed ? "ChevronRight" : "ChevronDown"}
           aria-hidden

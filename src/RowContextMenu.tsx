@@ -12,6 +12,12 @@ import { toast } from "sonner";
 import { Icon } from "./components/Icon";
 import { AccentPicker, accentValueFromCss } from "./AccentPicker";
 import { cn } from "./lib/utils";
+import { usePortalScopeProps } from "./lib/portal-scope";
+import {
+  MENU_CONTENT_CLASS,
+  MENU_SEPARATOR_CLASS,
+  menuItemClass,
+} from "./menu-classes";
 import { threadDisplayTitle } from "./inbox";
 import { uniqueFolderName } from "./organization";
 import { IconPicker } from "./IconPicker";
@@ -61,6 +67,7 @@ export function RowContextMenu({
   projectDecor?: ProjectDecorEntry | null;
 }) {
   const actions = useSidebarThreadActions();
+  const portalScope = usePortalScopeProps();
   const [open, setOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   // Every row wraps itself in this menu, so nothing here may cost anything
@@ -77,7 +84,8 @@ export function RowContextMenu({
       <ContextMenu.Portal>
         <ContextMenu.Content
           aria-label="Thread actions"
-          className="z-50 min-w-44 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+          {...portalScope}
+          className={cn(MENU_CONTENT_CLASS, "min-w-44")}
         >
           <Item onSelect={() => actions.open(thread.id, { split: false })}>
             Open
@@ -172,6 +180,7 @@ function MoveToFolderSubmenu({
   organization: OrganizationAccess;
   onFolderCreated?: (folderId: string) => void;
 }) {
+  const portalScope = usePortalScopeProps();
   return (
     <ContextMenu.Sub>
       <ContextMenu.SubTrigger className={submenuTriggerClassName}>
@@ -182,7 +191,8 @@ function MoveToFolderSubmenu({
         <ContextMenu.SubContent
           aria-label="Move to folder"
           sideOffset={4}
-          className="z-50 min-w-44 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+          {...portalScope}
+          className={cn(MENU_CONTENT_CLASS, "min-w-44")}
         >
           {organization.folders.map((folder) => (
             <Item
@@ -226,6 +236,7 @@ function ThreadColourSubmenu({
 }) {
   const folderId = organization.folderOf(thread.id)?.id ?? null;
   const value = accentValueFromCss(organization.accentFor(thread, folderId));
+  const portalScope = usePortalScopeProps();
   return (
     <ContextMenu.Sub>
       <ContextMenu.SubTrigger className={submenuTriggerClassName}>
@@ -236,7 +247,8 @@ function ThreadColourSubmenu({
         <ContextMenu.SubContent
           aria-label={`Colour for ${threadDisplayTitle(thread)}`}
           sideOffset={4}
-          className="z-50 w-64 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+          {...portalScope}
+          className={cn(MENU_CONTENT_CLASS, "w-64")}
         >
           <AccentPicker
             value={value}
@@ -272,6 +284,7 @@ function SnoozeSubmenu({
   presets: readonly ConfiguredSnoozePreset[];
   onSnooze: (snoozedUntil: number) => void;
 }) {
+  const portalScope = usePortalScopeProps();
   return (
     <ContextMenu.Sub>
       <ContextMenu.SubTrigger className={submenuTriggerClassName}>
@@ -282,7 +295,8 @@ function SnoozeSubmenu({
         <ContextMenu.SubContent
           aria-label="Snooze times"
           sideOffset={4}
-          className="z-50 min-w-40 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+          {...portalScope}
+          className={cn(MENU_CONTENT_CLASS, "min-w-40")}
         >
           {presets.map((preset) => (
             <Item
@@ -303,6 +317,7 @@ function CopySubmenu({ thread }: { thread: PluginSidebarThread }) {
   // anything. The path is the host's own "Copy thread link" form (inferred
   // from bb core: personal project → /threads/<id>, else project-scoped).
   const { projects } = useSidebarThreads();
+  const portalScope = usePortalScopeProps();
   const project = projects.find((p) => p.id === thread.projectId);
   const threadPath = project?.isPersonal
     ? `/threads/${thread.id}`
@@ -322,7 +337,8 @@ function CopySubmenu({ thread }: { thread: PluginSidebarThread }) {
         <ContextMenu.SubContent
           aria-label="Copy thread data"
           sideOffset={4}
-          className="z-50 min-w-40 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+          {...portalScope}
+          className={cn(MENU_CONTENT_CLASS, "min-w-40")}
         >
           <Item onSelect={() => copy(threadDisplayTitle(thread))}>
             Copy title
@@ -344,10 +360,7 @@ function CopySubmenu({ thread }: { thread: PluginSidebarThread }) {
   );
 }
 
-const submenuTriggerClassName = cn(
-  "flex cursor-pointer items-center rounded-md px-2 py-1.5 text-sm outline-none",
-  "data-[state=open]:bg-accent data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground",
-);
+const submenuTriggerClassName = menuItemClass();
 
 function Item({
   children,
@@ -364,12 +377,7 @@ function Item({
     <ContextMenu.Item
       disabled={disabled}
       onSelect={onSelect}
-      className={cn(
-        "cursor-pointer rounded-md px-2 py-1.5 text-sm outline-none",
-        "data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground",
-        "data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50",
-        destructive && "text-destructive-text",
-      )}
+      className={menuItemClass(destructive)}
     >
       {children}
     </ContextMenu.Item>
@@ -377,5 +385,5 @@ function Item({
 }
 
 function Separator() {
-  return <ContextMenu.Separator className="my-1 h-px bg-border" />;
+  return <ContextMenu.Separator className={MENU_SEPARATOR_CLASS} />;
 }

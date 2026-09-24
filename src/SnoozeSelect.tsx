@@ -14,6 +14,7 @@ export function SnoozeSelect({
   snoozePresets,
   disabled = false,
   triggerClassName,
+  tabIndex,
   onOpenChange,
   onSnooze,
 }: {
@@ -21,6 +22,7 @@ export function SnoozeSelect({
   snoozePresets: readonly ConfiguredSnoozePreset[];
   disabled?: boolean;
   triggerClassName: string;
+  tabIndex?: number;
   onOpenChange?: (open: boolean) => void;
   onSnooze: (snoozedUntil: number) => void;
 }) {
@@ -44,6 +46,7 @@ export function SnoozeSelect({
       <Tooltip label={label}>
         <SelectTrigger
           aria-label={label}
+          tabIndex={tabIndex}
           className={`${triggerClassName} [&>svg:last-child]:hidden`}
         >
           <Icon name="Clock" className="size-3.5" />
